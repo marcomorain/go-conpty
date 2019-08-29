@@ -34,48 +34,25 @@ var (
 
 type Dword uint32
 
-func getStdOut() (uintptr, error) {
-
-	//windows.GetStdHandle()
-	console, _, err := syscall.Syscall(GetStdHandle, 1, windows.STD_OUTPUT_HANDLE, 0, 0)
-
-	if err != syscall.Errno(0) {
-		return 0, err
-	}
-
-	return console, nil
-}
-
 // EnableVirtualTerminalProcessing Enable Console VT Processing
 func enableVirtualTerminalProcessing() error {
-	console, err := getStdOut()
+
+	console, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
 
 	if err != nil {
 		return errors.Wrap(err, "Failed to get a handle to stdout")
 	}
 
-	var consoleMode Dword
-	result, _, err := syscall.Syscall(GetConsoleMode, 2, console, uintptr(unsafe.Pointer(&consoleMode)), 0)
+	var consoleMode uint32
+	err = windows.GetConsoleMode(console, &consoleMode)
 
-	if err != syscall.Errno(0) {
+	if err != nil {
 		return errors.Wrap(err, "GetConsoleMode")
 	}
 
-	if result == 0 {
-		return errors.New("GetConsoleMode failed")
-	}
+	err = windows.SetConsoleMode(console, consoleMode|windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING)
 
-	result, _, err = syscall.Syscall(SetConsoleMode, 2, console, uintptr(consoleMode|windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING), 0)
-
-	if err != syscall.Errno(0) {
-		return errors.Wrap(err, "SetConsoleMode")
-	}
-
-	if result == 0 {
-		return errors.New("SetConsoleMode failed")
-	}
-
-	return nil
+	return errors.Wrap(err, "SetConsoleMode")
 }
 
 type Word uint16
@@ -144,13 +121,13 @@ func getScreenSize() (size *Coord, err error) {
 	var consoleSize = new(Coord)
 	var csbi ConsoleScreenBufferInfo
 
-	console, err := getStdOut()
+	console, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
 
 	if err != nil {
 		return nil, err
 	}
 
-	err = win32Bool(syscall.Syscall(GetConsoleScreenBufferInfo, 2, console, uintptr(unsafe.Pointer(&csbi)), 0))
+	err = win32Bool(syscall.Syscall(GetConsoleScreenBufferInfo, 2, uintptr(console), uintptr(unsafe.Pointer(&csbi)), 0))
 
 	if err != nil {
 		return nil, err
@@ -338,7 +315,7 @@ func echo() error {
 
 func PipeListener(pipe windows.Handle) {
 
-	console, err := getStdOut()
+	console, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
 
 	if err != nil {
 		panic(err) // TODO: error channel
@@ -351,14 +328,14 @@ func PipeListener(pipe windows.Handle) {
 	for {
 		// Read from the pipe
 		var bytesRead uint32
-		err = syscall.ReadFile(syscall.Handle(pipe), szBuffer, &bytesRead, nil)
+		_ = windows.ReadFile(pipe, szBuffer, &bytesRead, nil) // todo error checking
 
 		// if err != nil {
 		// 	panic(err)
 		// }
 
 		var bytesWritten uint32
-		err = syscall.WriteFile(syscall.Handle(console), szBuffer[:bytesRead], &bytesWritten, nil)
+		_ = windows.WriteFile(console, szBuffer[:bytesRead], &bytesWritten, nil) // todo error checking
 
 		// if err != nil {
 		// 	panic(err)
