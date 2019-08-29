@@ -5,7 +5,6 @@ import (
 	"os"
 	"syscall"
 	"time"
-	"unicode/utf16"
 	"unsafe"
 
 	"github.com/pkg/errors"
@@ -15,11 +14,9 @@ import (
 
 var (
 	// TODO: handle the error and unload the library properly.
-	kernel32, _           = windows.LoadLibrary("kernel32.dll")
-	CloseHandle, _        = windows.GetProcAddress(kernel32, "CloseHandle")
-	ClosePseudoConsole, _ = windows.GetProcAddress(kernel32, "ClosePseudoConsole")
-	CreatePipe, _         = windows.GetProcAddress(kernel32, "CreatePipe")
-	//CreateProcessA, _                    = windows.GetProcAddress(kernel32, "CreateProcessA")
+	kernel32, _                          = windows.LoadLibrary("kernel32.dll")
+	ClosePseudoConsole, _                = windows.GetProcAddress(kernel32, "ClosePseudoConsole")
+	CreatePipe, _                        = windows.GetProcAddress(kernel32, "CreatePipe")
 	CreateProcessW, _                    = windows.GetProcAddress(kernel32, "CreateProcessW")
 	CreatePseudoConsole, _               = windows.GetProcAddress(kernel32, "CreatePseudoConsole")
 	DeleteProcThreadAttributeList, _     = windows.GetProcAddress(kernel32, "DeleteProcThreadAttributeList")
@@ -38,6 +35,8 @@ var (
 type Dword uint32
 
 func getStdOut() (uintptr, error) {
+
+	//windows.GetStdHandle()
 	console, _, err := syscall.Syscall(GetStdHandle, 1, windows.STD_OUTPUT_HANDLE, 0, 0)
 
 	if err != syscall.Errno(0) {
@@ -169,13 +168,6 @@ func createPipes() (read, write windows.Handle, err error) {
 	return
 }
 
-func closeThisHandle(h windows.Handle) error {
-	if h == windows.InvalidHandle {
-		return nil
-	}
-	return win32Bool(syscall.Syscall(CloseHandle, 1, uintptr(h), 0, 0))
-}
-
 func createPseudoConsoleAndPipes() (pc, pipeIn, pipeOut windows.Handle, err error) {
 
 	pipePtyIn, pipeOut, err := createPipes()
@@ -203,8 +195,8 @@ func createPseudoConsoleAndPipes() (pc, pipeIn, pipeOut windows.Handle, err erro
 		uintptr(unsafe.Pointer(&pc)), // _Out_ HPCON* phPC
 		0))
 
-	_ = closeThisHandle(pipePtyIn)
-	_ = closeThisHandle(pipePtyIn)
+	_ = windows.CloseHandle(pipePtyIn)
+	_ = windows.CloseHandle(pipePtyOut)
 
 	return
 }
@@ -257,20 +249,6 @@ func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupIn
 	return startupInfo, buffer, errors.Wrap(e2, "Failed UpdateProcThreadAttribute")
 }
 
-// StringToUTF16Ptr converts a Go string into a pointer to a null-terminated UTF-16 wide string.
-// This assumes str is of a UTF-8 compatible encoding so that it can be re-encoded as UTF-16.
-func StringToUTF16Ptr(str string) *uint16 {
-	wchars := utf16.Encode([]rune(str + "\x00"))
-	return &wchars[0]
-}
-
-// StringToCharPtr converts a Go string into pointer to a null-terminated cstring.
-// This assumes the go string is already ANSI encoded.
-func StringToCharPtr(str string) *uint8 {
-	chars := append([]byte(str), 0) // null terminated
-	return &chars[0]
-}
-
 func echo() error {
 	szCommand := "ping localhost"
 
@@ -281,9 +259,6 @@ func echo() error {
 	}
 
 	// Create & start thread to listen to the incoming pipe
-	// Note: Using CRT-safe _beginthread() rather than CreateThread()
-	//   HANDLE hPipeListenerThread{ reinterpret_cast<HANDLE>(_beginthread(PipeListener, 0, hPipeIn)) };
-
 	go PipeListener(pipeIn)
 
 	startupInfo, _, err := InitializeStartupInfoAttachedToPseudoConsole(pc)
@@ -297,7 +272,7 @@ func echo() error {
 	err = win32Bool(syscall.Syscall12(CreateProcessW,
 		10,
 		0,
-		uintptr(unsafe.Pointer(StringToUTF16Ptr(szCommand))),
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(szCommand))),
 		0,
 		0,
 		0,
@@ -331,8 +306,8 @@ func echo() error {
 	// --- CLOSEDOWN ---
 	// Now safe to clean-up client app's process-info & thread
 
-	_ = closeThisHandle(windows.Handle(piClient.Thread))
-	_ = closeThisHandle(windows.Handle(piClient.Process))
+	_ = windows.CloseHandle(windows.Handle(piClient.Thread))
+	_ = windows.CloseHandle(windows.Handle(piClient.Process))
 
 	// Cleanup attribute list
 
@@ -354,8 +329,7 @@ func echo() error {
 
 	// Clean-up the pipes
 
-	_ = closeThisHandle(pipeOut)
-
+	_ = windows.CloseHandle(pipeOut)
 	//_ = closeThisHandle(pipeIn) // done in IO goroutine
 
 	return nil
@@ -395,7 +369,7 @@ func PipeListener(pipe windows.Handle) {
 		}
 	}
 
-	closeThisHandle(pipe)
+	_ = windows.CloseHandle(pipe) // todo handle error
 }
 
 func main() {
