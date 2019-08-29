@@ -15,11 +15,11 @@ import (
 
 var (
 	// TODO: handle the error and unload the library properly.
-	kernel32, _                          = windows.LoadLibrary("kernel32.dll")
-	CloseHandle, _                       = windows.GetProcAddress(kernel32, "CloseHandle")
-	ClosePseudoConsole, _                = windows.GetProcAddress(kernel32, "ClosePseudoConsole")
-	CreatePipe, _                        = windows.GetProcAddress(kernel32, "CreatePipe")
-	CreateProcessA, _                    = windows.GetProcAddress(kernel32, "CreateProcessA")
+	kernel32, _           = windows.LoadLibrary("kernel32.dll")
+	CloseHandle, _        = windows.GetProcAddress(kernel32, "CloseHandle")
+	ClosePseudoConsole, _ = windows.GetProcAddress(kernel32, "ClosePseudoConsole")
+	CreatePipe, _         = windows.GetProcAddress(kernel32, "CreatePipe")
+	//CreateProcessA, _                    = windows.GetProcAddress(kernel32, "CreateProcessA")
 	CreateProcessW, _                    = windows.GetProcAddress(kernel32, "CreateProcessW")
 	CreatePseudoConsole, _               = windows.GetProcAddress(kernel32, "CreatePseudoConsole")
 	DeleteProcThreadAttributeList, _     = windows.GetProcAddress(kernel32, "DeleteProcThreadAttributeList")
@@ -134,15 +134,10 @@ func win32Hresult(r1, r2 uintptr, err error) error {
 }
 
 func win32Void(r1, r2 uintptr, err error) error {
-	switch {
-	case err != syscall.Errno(0):
+	if err != syscall.Errno(0) {
 		return err
-
-	case r1 != 0:
-		return fmt.Errorf("void Win32 syscall faild: r1=%X r2=%X err=%v", r1, r2, err)
-	default:
-		return nil
 	}
+	return nil
 }
 
 func getScreenSize() (size *Coord, err error) {
@@ -301,10 +296,10 @@ func echo() error {
 
 	var piClient syscall.ProcessInformation
 
-	err = win32Bool(syscall.Syscall12(CreateProcessA,
+	err = win32Bool(syscall.Syscall12(CreateProcessW,
 		10,
 		0,
-		uintptr(unsafe.Pointer(StringToCharPtr(szCommand))),
+		uintptr(unsafe.Pointer(StringToUTF16Ptr(szCommand))),
 		0,
 		0,
 		0,
@@ -336,6 +331,8 @@ func echo() error {
 	//		Sleep(500);
 	time.Sleep(500 * time.Millisecond)
 
+	fmt.Println("done sleeping")
+
 	// --- CLOSEDOWN ---
 	// Now safe to clean-up client app's process-info & thread
 
@@ -350,6 +347,8 @@ func echo() error {
 		return errors.Wrap(err, "DeleteProcThreadAttributeList")
 	}
 
+	fmt.Println("Deleted ProcThreadAttributeList ")
+
 	// free(startupInfo.lpAttributeList); This is GCed by golang
 
 	// Close ConPTY - this will terminate client process if running
@@ -360,19 +359,28 @@ func echo() error {
 		return errors.Wrap(err, "ClosePseudoConsole")
 	}
 
+	fmt.Println("Closed PseudoConsole")
+
 	// Clean-up the pipes
 
 	_ = closeThisHandle(pipeOut)
-	_ = closeThisHandle(pipeIn)
+	fmt.Println("Closed pipeOut")
 
-	fmt.Printf("Buffer: %v\n", buffer)
+	//_ = closeThisHandle(pipeIn)
+	//fmt.Println("Closed pipeIn")
+
+	fmt.Println("Buffer")
+
+	if buffer != nil {
+		fmt.Println("Buffer 2")
+	}
 
 	return nil
 
 }
 
 func PipeListener(pipe windows.Handle) {
-	fmt.Printf("go started with arg: %s\n", pipe)
+	fmt.Printf("go started with arg: %v\n", pipe)
 
 	console, err := getStdOut()
 
@@ -415,6 +423,8 @@ func PipeListener(pipe windows.Handle) {
 			break
 		}
 	}
+
+	closeThisHandle(pipe)
 }
 
 func main() {
