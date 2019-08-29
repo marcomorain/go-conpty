@@ -229,8 +229,6 @@ func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupIn
 		return nil, nil, fmt.Errorf("initializeProcThreadAttributeList ret=%x err=%v attrListsize=%v", ret, err, attributeListSize)
 	}
 
-	fmt.Printf("Allocting Attribute List %d\n", attributeListSize)
-
 	var buffer = make([]byte, int(attributeListSize))
 	startupInfo.AttributeList = &buffer[0]
 
@@ -288,7 +286,7 @@ func echo() error {
 
 	go PipeListener(pipeIn)
 
-	startupInfo, buffer, err := InitializeStartupInfoAttachedToPseudoConsole(pc)
+	startupInfo, _, err := InitializeStartupInfoAttachedToPseudoConsole(pc)
 
 	if err != nil {
 		return errors.Wrap(err, "failed to InitializeStartupInfoAttachedToPseudoConsole")
@@ -321,17 +319,14 @@ func echo() error {
 	}
 
 	// Wait up to 10s for ping process to complete
-	r1, r2, err := syscall.Syscall(WaitForSingleObject, 2, uintptr(piClient.Thread), 10*1000, 0)
-	fmt.Printf("WaitForSingleObject returned %X %X %v\n", r1, r2, err)
-	if err != syscall.Errno(0) {
+	err = win32Hresult(syscall.Syscall(WaitForSingleObject, 2, uintptr(piClient.Thread), 10*1000, 0))
+	if err != nil {
 		return errors.Wrap(err, "WaitForSingleObjectd")
 	}
 
 	// Allow listening thread to catch-up with final output!
 	//		Sleep(500);
 	time.Sleep(500 * time.Millisecond)
-
-	fmt.Println("done sleeping")
 
 	// --- CLOSEDOWN ---
 	// Now safe to clean-up client app's process-info & thread
@@ -347,8 +342,6 @@ func echo() error {
 		return errors.Wrap(err, "DeleteProcThreadAttributeList")
 	}
 
-	fmt.Println("Deleted ProcThreadAttributeList ")
-
 	// free(startupInfo.lpAttributeList); This is GCed by golang
 
 	// Close ConPTY - this will terminate client process if running
@@ -359,28 +352,17 @@ func echo() error {
 		return errors.Wrap(err, "ClosePseudoConsole")
 	}
 
-	fmt.Println("Closed PseudoConsole")
-
 	// Clean-up the pipes
 
 	_ = closeThisHandle(pipeOut)
-	fmt.Println("Closed pipeOut")
 
-	//_ = closeThisHandle(pipeIn)
-	//fmt.Println("Closed pipeIn")
-
-	fmt.Println("Buffer")
-
-	if buffer != nil {
-		fmt.Println("Buffer 2")
-	}
+	//_ = closeThisHandle(pipeIn) // done in IO goroutine
 
 	return nil
 
 }
 
 func PipeListener(pipe windows.Handle) {
-	fmt.Printf("go started with arg: %v\n", pipe)
 
 	console, err := getStdOut()
 
@@ -388,38 +370,27 @@ func PipeListener(pipe windows.Handle) {
 		panic(err) // TODO: error channel
 	}
 
-	fmt.Printf("Got a console %v\n", console)
-
-	// const DWORD BUFF_SIZE{ 512 };
 	const buffSize = 512
 
 	szBuffer := make([]byte, buffSize)
 
-	var dwBytesRead Dword
-	var dwBytesWritten Dword
-
 	for {
 		// Read from the pipe
+		var bytesRead uint32
+		err = syscall.ReadFile(syscall.Handle(pipe), szBuffer, &bytesRead, nil)
 
-		// TODO: syscall.ReadFile
-		fRead, _, err := syscall.Syscall6(ReadFile, 5, uintptr(pipe), uintptr(unsafe.Pointer(&szBuffer[0])), buffSize, uintptr(unsafe.Pointer(&dwBytesRead)), 0, 0)
+		// if err != nil {
+		// 	panic(err)
+		// }
 
-		if err != syscall.Errno(0) {
-			panic(err)
-		}
+		var bytesWritten uint32
+		err = syscall.WriteFile(syscall.Handle(console), szBuffer[:bytesRead], &bytesWritten, nil)
 
-		// TODO: syscall.WriteFile
-		_, _, err = syscall.Syscall6(WriteFile, 5, uintptr(console), uintptr(unsafe.Pointer(&szBuffer[0])), uintptr(dwBytesRead), uintptr(unsafe.Pointer(&dwBytesWritten)), 0, 0)
+		// if err != nil {
+		// 	panic(err)
+		// }
 
-		if err != syscall.Errno(0) {
-			panic(err)
-		}
-
-		if fRead == 0 {
-			break
-		}
-
-		if dwBytesRead < 1 {
+		if bytesRead < 1 {
 			break
 		}
 	}
