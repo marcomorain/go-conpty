@@ -1,8 +1,7 @@
-package main
+package pty
 
 import (
 	"fmt"
-	"os"
 	"syscall"
 	"time"
 	"unsafe"
@@ -15,27 +14,27 @@ import (
 var (
 	// TODO: handle the error and unload the library properly.
 	kernel32, _                          = windows.LoadLibrary("kernel32.dll")
-	ClosePseudoConsole, _                = windows.GetProcAddress(kernel32, "ClosePseudoConsole")
-	CreatePipe, _                        = windows.GetProcAddress(kernel32, "CreatePipe")
-	CreateProcessW, _                    = windows.GetProcAddress(kernel32, "CreateProcessW")
-	CreatePseudoConsole, _               = windows.GetProcAddress(kernel32, "CreatePseudoConsole")
-	DeleteProcThreadAttributeList, _     = windows.GetProcAddress(kernel32, "DeleteProcThreadAttributeList")
-	GetConsoleMode, _                    = windows.GetProcAddress(kernel32, "GetConsoleMode")
-	GetConsoleScreenBufferInfo, _        = windows.GetProcAddress(kernel32, "GetConsoleScreenBufferInfo")
-	GetStdHandle, _                      = windows.GetProcAddress(kernel32, "GetStdHandle")
-	InitializeProcThreadAttributeList, _ = windows.GetProcAddress(kernel32, "InitializeProcThreadAttributeList")
-	ReadFile, _                          = windows.GetProcAddress(kernel32, "ReadFile")
-	ResizePseudoConsole, _               = windows.GetProcAddress(kernel32, "ResizePseudoConsole")
-	SetConsoleMode, _                    = windows.GetProcAddress(kernel32, "SetConsoleMode")
-	UpdateProcThreadAttribute, _         = windows.GetProcAddress(kernel32, "UpdateProcThreadAttribute")
-	WaitForSingleObject, _               = windows.GetProcAddress(kernel32, "WaitForSingleObject")
-	WriteFile, _                         = windows.GetProcAddress(kernel32, "WriteFile")
+	closePseudoConsole, _                = windows.GetProcAddress(kernel32, "ClosePseudoConsole")
+	createPseudoConsole, _               = windows.GetProcAddress(kernel32, "CreatePseudoConsole")
+	deleteProcThreadAttributeList, _     = windows.GetProcAddress(kernel32, "DeleteProcThreadAttributeList")
+	initializeProcThreadAttributeList, _ = windows.GetProcAddress(kernel32, "InitializeProcThreadAttributeList")
+	resizePseudoConsole, _               = windows.GetProcAddress(kernel32, "ResizePseudoConsole")
+	updateProcThreadAttribute, _         = windows.GetProcAddress(kernel32, "UpdateProcThreadAttribute")
 )
 
-type Dword uint32
+func PrettyPrint(data interface{}) {
+	// var p []byte
+	// //    var err := error
+	// p, err := json.MarshalIndent(data, "", "\t")
+	// if err != nil {
+	// 	fmt.Println(err)
+	// 	return
+	// }
+	//fmt.Printf("%s \n", p)
+}
 
 // EnableVirtualTerminalProcessing Enable Console VT Processing
-func enableVirtualTerminalProcessing() error {
+func EnableVirtualTerminalProcessing() error {
 
 	console, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
 
@@ -55,30 +54,6 @@ func enableVirtualTerminalProcessing() error {
 	return errors.Wrap(err, "SetConsoleMode")
 }
 
-type Word uint16
-type Short int16
-
-// Coord Size
-type Coord struct {
-	X uint16
-	Y uint16
-}
-
-type SmallRect struct {
-	Left   Short
-	Top    Short
-	Right  Short
-	Bottom Short
-}
-
-type ConsoleScreenBufferInfo struct {
-	dwSize              Coord
-	dwCursorPosition    Coord
-	wAttributes         Word
-	srWindow            SmallRect
-	dwMaximumWindowSize Coord
-}
-
 // StartupInfoEx lint me
 type StartupInfoEx struct {
 	windows.StartupInfo
@@ -86,6 +61,8 @@ type StartupInfoEx struct {
 }
 
 func win32Bool(r1, r2 uintptr, err error) error {
+	//fmt.Printf("bool Win32 syscall: r1=%X r2=%X err=%v\n", r1, r2, err)
+
 	switch {
 	case err != syscall.Errno(0):
 		return err
@@ -98,6 +75,8 @@ func win32Bool(r1, r2 uintptr, err error) error {
 }
 
 func win32Hresult(r1, r2 uintptr, err error) error {
+	//fmt.Printf("win32Hresult: r1=%X r2=%X err=%v\n", r1, r2, err)
+
 	switch {
 	case err != syscall.Errno(0):
 		return err
@@ -110,15 +89,16 @@ func win32Hresult(r1, r2 uintptr, err error) error {
 }
 
 func win32Void(r1, r2 uintptr, err error) error {
+	//fmt.Printf("win32Void: r1=%x r2=%x err=%v\n", r1, r2, err)
 	if err != syscall.Errno(0) {
 		return err
 	}
 	return nil
 }
 
-func getScreenSize() (size *Coord, err error) {
+func getScreenSize() (size *windows.Coord, err error) {
 	// Determine required size of Pseudo Console
-	var consoleSize = new(Coord)
+	var consoleSize = new(windows.Coord)
 	var csbi windows.ConsoleScreenBufferInfo
 
 	console, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
@@ -133,8 +113,8 @@ func getScreenSize() (size *Coord, err error) {
 		return nil, err
 	}
 
-	consoleSize.X = uint16(csbi.Window.Right - csbi.Window.Left + 1)
-	consoleSize.Y = uint16(csbi.Window.Bottom - csbi.Window.Top + 1)
+	consoleSize.X = csbi.Window.Right - csbi.Window.Left + 1
+	consoleSize.Y = csbi.Window.Bottom - csbi.Window.Top + 1
 
 	return consoleSize, nil
 }
@@ -148,21 +128,25 @@ func createPseudoConsoleAndPipes() (pc, pipeIn, pipeOut windows.Handle, err erro
 
 	pipePtyIn, pipeOut, err := createPipes()
 	if err != nil {
-		return
+		return 0, 0, 0, errors.Wrap(err, "failed to create output pipe")
 	}
+
+	defer windows.CloseHandle(pipePtyIn)
 
 	pipeIn, pipePtyOut, err := createPipes()
 	if err != nil {
-		return
+		return 0, 0, 0, errors.Wrap(err, "failed to create output pipe")
 	}
+
+	defer windows.CloseHandle(pipePtyOut)
 
 	size, err := getScreenSize()
 	if err != nil {
-		return
+		return 0, 0, 0, errors.Wrap(err, "failed to read screen size")
 	}
 
 	err = win32Hresult(syscall.Syscall6(
-		CreatePseudoConsole,
+		createPseudoConsole,
 		5,
 		uintptr(unsafe.Pointer(&size)), // _In_ COORD size
 		uintptr(pipePtyIn),             // _In_ HANDLE hInput
@@ -171,22 +155,37 @@ func createPseudoConsoleAndPipes() (pc, pipeIn, pipeOut windows.Handle, err erro
 		uintptr(unsafe.Pointer(&pc)), // _Out_ HPCON* phPC
 		0))
 
-	_ = windows.CloseHandle(pipePtyIn)
-	_ = windows.CloseHandle(pipePtyOut)
-
-	return
+	if err != nil {
+		return 0, 0, 0, errors.Wrap(err, "CreatePseudoConsole failed")
+	}
+	return pc, pipeIn, pipeOut, nil
 }
 
-// Initializes the specified startup info struct with the required properties and
-// updates its thread attribute list with the specified ConPTY handle
+// Resize lint lint
+func Resize(pc windows.Handle, size windows.Coord) error {
+	return win32Hresult(syscall.Syscall(
+		resizePseudoConsole,
+		2,
+		uintptr(pc),                    // _In_ HPCON hPC
+		uintptr(unsafe.Pointer(&size)), // _In_ COORD size
+		0))
+}
+
+// InitializeStartupInfoAttachedToPseudoConsole Initializes the specified startup info
+// struct with the required properties and updates its thread attribute list with the
+// specified ConPTY handle
 func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupInfoEx, []byte, error) {
+
+	if pc == windows.InvalidHandle {
+		return nil, nil, errors.New("bad pc")
+	}
 
 	startupInfo := new(StartupInfoEx)
 	startupInfo.StartupInfo.Cb = uint32(unsafe.Sizeof(*startupInfo))
 
 	var attributeListSize int64
 
-	ret, _, err := syscall.Syscall6(InitializeProcThreadAttributeList, 4,
+	ret, _, err := syscall.Syscall6(initializeProcThreadAttributeList, 4,
 		0, 1, 0, uintptr(unsafe.Pointer(&attributeListSize)), 0, 0)
 
 	if err != windows.ERROR_INSUFFICIENT_BUFFER {
@@ -200,7 +199,7 @@ func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupIn
 	var buffer = make([]byte, int(attributeListSize))
 	startupInfo.AttributeList = &buffer[0]
 
-	e1 := win32Bool(syscall.Syscall6(InitializeProcThreadAttributeList, 4,
+	e1 := win32Bool(syscall.Syscall6(initializeProcThreadAttributeList, 4,
 		uintptr(unsafe.Pointer(startupInfo.AttributeList)), 1, 0, uintptr(unsafe.Pointer(&attributeListSize)), 0, 0))
 
 	if e1 != nil {
@@ -209,8 +208,10 @@ func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupIn
 
 	var ProcThreadAttributePseudoconsole uint32 = 0x00020016
 
+	PrettyPrint(startupInfo)
+
 	e2 := win32Bool(syscall.Syscall9(
-		UpdateProcThreadAttribute,
+		updateProcThreadAttribute,
 		7,
 		uintptr(unsafe.Pointer(startupInfo.AttributeList)),
 		0,
@@ -225,7 +226,7 @@ func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupIn
 	return startupInfo, buffer, errors.Wrap(e2, "Failed UpdateProcThreadAttribute")
 }
 
-func Copy(dst, src windows.Handle) (written int64, err error) {
+func copy(dst, src windows.Handle, side string) (written int64, err error) {
 	buffer := make([]byte, 1024)
 	written = 0
 
@@ -235,6 +236,7 @@ func Copy(dst, src windows.Handle) (written int64, err error) {
 		err = windows.ReadFile(src, buffer, &bytesRead, nil)
 
 		if err != nil || bytesRead == 0 {
+			//fmt.Printf("%s: closing after read bytesRead: %d written: %d err: %v\n", side, bytesRead, written, err)
 			return
 		}
 
@@ -242,6 +244,7 @@ func Copy(dst, src windows.Handle) (written int64, err error) {
 		err = windows.WriteFile(dst, buffer[:bytesRead], &bytesWritten, nil)
 
 		if err != nil {
+			//fmt.Printf("%s: closing after write bytesWritten: %d written: %d err: %v\n", side, bytesWritten, written, err)
 			return
 		}
 
@@ -250,18 +253,21 @@ func Copy(dst, src windows.Handle) (written int64, err error) {
 	}
 }
 
-func echo() error {
-	szCommand := "ping localhost"
+// Echo test entry point
+func Echo() error {
+	szCommand := "ssh localhost" // ping
 
-	pc, pipeIn, pipeOut, err := createPseudoConsoleAndPipes() // TODO grab pipeOut
+	pc, pipeIn, _, err := createPseudoConsoleAndPipes()
 
 	if err != nil {
 		return errors.Wrap(err, "failed to create pipes")
 	}
 
+	//fmt.Printf("pc is %x\n", pc)
+
 	// Clean-up the pipes
-	defer windows.CloseHandle(pipeOut)
-	defer windows.CloseHandle(pipeIn)
+	//defer windows.CloseHandle(pipeOut)
+	//defer windows.CloseHandle(pipeIn)
 
 	console, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
 
@@ -269,13 +275,9 @@ func echo() error {
 		return err
 	}
 
-	stdin, err := windows.GetStdHandle(windows.STD_INPUT_HANDLE)
+	_, err = windows.GetStdHandle(windows.STD_INPUT_HANDLE)
 
-	// Create & start thread to listen to the incoming pipe
-	go Copy(console, pipeIn)
-	go Copy(pipeOut, stdin)
-
-	startupInfo, _, err := InitializeStartupInfoAttachedToPseudoConsole(pc)
+	startupInfo, buffer, err := InitializeStartupInfoAttachedToPseudoConsole(pc)
 
 	if err != nil {
 		return errors.Wrap(err, "failed to InitializeStartupInfoAttachedToPseudoConsole")
@@ -285,12 +287,19 @@ func echo() error {
 
 	err = windows.CreateProcess(nil, windows.StringToUTF16Ptr(szCommand), nil, nil, false, windows.EXTENDED_STARTUPINFO_PRESENT, nil, nil, &startupInfo.StartupInfo, &piClient)
 
+	fmt.Println("process created")
 	if err != nil {
 		return errors.Wrap(err, "Create process failed")
 	}
 
+	//fmt.Printf("Process: %v %v Thread: %v %v\n", piClient.ProcessId, piClient.Process, piClient.ThreadId, piClient.Thread)
+
+	// Create & start thread to listen to the incoming pipe
+	go copy(console, pipeIn, "to stdout")
+	// go copy(pipeOut, stdin, "from stdin")
+
 	// Wait up to 10s for ping process to complete
-	event, err := windows.WaitForSingleObject(piClient.Thread, 10*1000)
+	event, err := windows.WaitForSingleObject(piClient.Process, 10*1000)
 	if err != nil {
 		return errors.Wrap(err, "WaitForSingleObjectd")
 	}
@@ -298,9 +307,19 @@ func echo() error {
 	if event != 0 {
 		return fmt.Errorf("WaitForSingleObject returned event %x", event)
 	}
+	//fmt.Printf("waited ok: %x\n", event)
+
+	var exitCode uint32
+	windows.GetExitCodeProcess(piClient.Process, &exitCode)
+
+	fmt.Printf("exit process code: %x\n", exitCode)
 
 	// Allow listening thread to catch-up with final output!
 	time.Sleep(500 * time.Millisecond)
+
+	_ = len(buffer)
+
+	//fmt.Printf("slept ok buffer is %v\n", buffer)
 
 	// --- CLOSEDOWN ---
 	// Now safe to clean-up client app's process-info & thread
@@ -308,9 +327,11 @@ func echo() error {
 	_ = windows.CloseHandle(piClient.Thread)
 	_ = windows.CloseHandle(piClient.Process)
 
+	fmt.Println("Handles closed ok")
+
 	// Cleanup attribute list
 
-	err = win32Void(syscall.Syscall(DeleteProcThreadAttributeList, 1, uintptr(unsafe.Pointer(startupInfo.AttributeList)), 0, 0))
+	err = win32Void(syscall.Syscall(deleteProcThreadAttributeList, 1, uintptr(unsafe.Pointer(startupInfo.AttributeList)), 0, 0))
 
 	if err != nil {
 		return errors.Wrap(err, "DeleteProcThreadAttributeList")
@@ -320,25 +341,12 @@ func echo() error {
 
 	// Close ConPTY - this will terminate client process if running
 
-	err = win32Void(syscall.Syscall(ClosePseudoConsole, 1, uintptr(pc), 0, 0)) // _In_ HPCON hPC
+	err = win32Void(syscall.Syscall(closePseudoConsole, 1, uintptr(pc), 0, 0)) // _In_ HPCON hPC
 
 	if err != nil {
 		return errors.Wrap(err, "ClosePseudoConsole")
 	}
 
 	return nil
-
-}
-
-func main() {
-	if err := enableVirtualTerminalProcessing(); err != nil {
-		fmt.Printf("enableVirtualTerminalProcessing failed %v\n", err)
-		os.Exit(1)
-
-	}
-	if err := echo(); err != nil {
-		fmt.Printf("echo failed %v\n", err)
-		os.Exit(1)
-	}
 
 }
