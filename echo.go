@@ -1,10 +1,15 @@
 package main
 
 import (
-	"errors"
+	"encoding/json"
 	"fmt"
+	"os"
 	"syscall"
+	"time"
+	"unicode/utf16"
 	"unsafe"
+
+	"github.com/pkg/errors"
 
 	"golang.org/x/sys/windows"
 )
@@ -12,18 +17,35 @@ import (
 var (
 	// TODO: handle the error and unload the library properly.
 	kernel32, _                          = windows.LoadLibrary("kernel32.dll")
+	CloseHandle, _                       = windows.GetProcAddress(kernel32, "CloseHandle")
 	ClosePseudoConsole, _                = windows.GetProcAddress(kernel32, "ClosePseudoConsole")
 	CreatePipe, _                        = windows.GetProcAddress(kernel32, "CreatePipe")
+	CreateProcessA, _                    = windows.GetProcAddress(kernel32, "CreateProcessA")
+	CreateProcessW, _                    = windows.GetProcAddress(kernel32, "CreateProcessW")
 	CreatePseudoConsole, _               = windows.GetProcAddress(kernel32, "CreatePseudoConsole")
+	DeleteProcThreadAttributeList, _     = windows.GetProcAddress(kernel32, "DeleteProcThreadAttributeList")
 	GetConsoleMode, _                    = windows.GetProcAddress(kernel32, "GetConsoleMode")
 	GetConsoleScreenBufferInfo, _        = windows.GetProcAddress(kernel32, "GetConsoleScreenBufferInfo")
 	GetStdHandle, _                      = windows.GetProcAddress(kernel32, "GetStdHandle")
+	InitializeProcThreadAttributeList, _ = windows.GetProcAddress(kernel32, "InitializeProcThreadAttributeList")
+	ReadFile, _                          = windows.GetProcAddress(kernel32, "ReadFile")
 	ResizePseudoConsole, _               = windows.GetProcAddress(kernel32, "ResizePseudoConsole")
 	SetConsoleMode, _                    = windows.GetProcAddress(kernel32, "SetConsoleMode")
-	CloseHandle, _                       = windows.GetProcAddress(kernel32, "CloseHandle")
-	InitializeProcThreadAttributeList, _ = windows.GetProcAddress(kernel32, "InitializeProcThreadAttributeList")
 	UpdateProcThreadAttribute, _         = windows.GetProcAddress(kernel32, "UpdateProcThreadAttribute")
+	WaitForSingleObject, _               = windows.GetProcAddress(kernel32, "WaitForSingleObject")
+	WriteFile, _                         = windows.GetProcAddress(kernel32, "WriteFile")
 )
+
+func prettyPrint(data interface{}) {
+	var p []byte
+	//    var err := error
+	p, err := json.MarshalIndent(data, "", "\t")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Printf("%s \n", p)
+}
 
 type Dword uint32
 
@@ -42,14 +64,14 @@ func enableVirtualTerminalProcessing() error {
 	console, err := getStdOut()
 
 	if err != nil {
-		return err
+		return errors.Wrap(err, "Failed to get a handle to stdout")
 	}
 
 	var consoleMode Dword
 	result, _, err := syscall.Syscall(GetConsoleMode, 2, console, uintptr(unsafe.Pointer(&consoleMode)), 0)
 
 	if err != syscall.Errno(0) {
-		return err
+		return errors.Wrap(err, "GetConsoleMode")
 	}
 
 	if result == 0 {
@@ -59,7 +81,7 @@ func enableVirtualTerminalProcessing() error {
 	result, _, err = syscall.Syscall(SetConsoleMode, 2, console, uintptr(consoleMode|windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING), 0)
 
 	if err != syscall.Errno(0) {
-		return err
+		return errors.Wrap(err, "SetConsoleMode")
 	}
 
 	if result == 0 {
@@ -99,6 +121,42 @@ type StartupInfoEx struct {
 	AttributeList *byte
 }
 
+func win32Bool(r1, r2 uintptr, err error) error {
+	switch {
+	case err != syscall.Errno(0):
+		return err
+
+	case r1 == 0:
+		return fmt.Errorf("bool Win32 syscall failed: r1=%X r2=%X err=%v", r1, r2, err)
+	default:
+		return nil
+	}
+}
+
+func win32Hresult(r1, r2 uintptr, err error) error {
+	switch {
+	case err != syscall.Errno(0):
+		return err
+
+	case r1 != 0:
+		return fmt.Errorf("hresult Win32 syscall faild: r1=%X r2=%X err=%v", r1, r2, err)
+	default:
+		return nil
+	}
+}
+
+func win32Void(r1, r2 uintptr, err error) error {
+	switch {
+	case err != syscall.Errno(0):
+		return err
+
+	case r1 != 0:
+		return fmt.Errorf("void Win32 syscall faild: r1=%X r2=%X err=%v", r1, r2, err)
+	default:
+		return nil
+	}
+}
+
 func getScreenSize() (size *Coord, err error) {
 	// Determine required size of Pseudo Console
 	var consoleSize = new(Coord)
@@ -110,7 +168,9 @@ func getScreenSize() (size *Coord, err error) {
 		return nil, err
 	}
 
-	syscall.Syscall(GetConsoleScreenBufferInfo, 2, console, uintptr(unsafe.Pointer(&csbi)), 0)
+	err = win32Bool(syscall.Syscall(GetConsoleScreenBufferInfo, 2, console, uintptr(unsafe.Pointer(&csbi)), 0))
+
+	// TODO: error checking
 
 	consoleSize.X = uint16(csbi.srWindow.Right - csbi.srWindow.Left + 1)
 	consoleSize.Y = uint16(csbi.srWindow.Bottom - csbi.srWindow.Top + 1)
@@ -120,39 +180,20 @@ func getScreenSize() (size *Coord, err error) {
 
 func createPipes() (read, write windows.Handle, err error) {
 	read, write = windows.InvalidHandle, windows.InvalidHandle
-	result, _, err := syscall.Syscall6(CreatePipe, 4, uintptr(unsafe.Pointer(&read)), uintptr(unsafe.Pointer(&write)), 0, 0, 0, 0)
-
-	if err != syscall.Errno(0) {
-		return
-	}
-
-	if result == 0 {
-		err = errors.New("CreatePipe failed")
-	}
-
+	err = win32Bool(syscall.Syscall6(CreatePipe, 4, uintptr(unsafe.Pointer(&read)), uintptr(unsafe.Pointer(&write)), 0, 0, 0, 0))
 	return
 }
 
 func closeThisHandle(h windows.Handle) error {
-	if h != windows.InvalidHandle {
-		ret, _, err := syscall.Syscall(CloseHandle, 1, uintptr(h), 0, 0)
-
-		if err != syscall.Errno(0) {
-			return err
-		}
-
-		if ret == 0 {
-			return errors.New("CloseHandle failed")
-		}
+	if h == windows.InvalidHandle {
+		return nil
 	}
-
-	return nil
+	return win32Bool(syscall.Syscall(CloseHandle, 1, uintptr(h), 0, 0))
 }
 
-func createPseudoConsoleAndPipes() (pseudoConsole, pipeIn, pipeOut windows.Handle, err error) {
+func createPseudoConsoleAndPipes() (pc, pipeIn, pipeOut windows.Handle, err error) {
 
 	pipePtyIn, pipeOut, err := createPipes()
-
 	if err != nil {
 		return
 	}
@@ -163,14 +204,11 @@ func createPseudoConsoleAndPipes() (pseudoConsole, pipeIn, pipeOut windows.Handl
 	}
 
 	size, err := getScreenSize()
-
 	if err != nil {
 		return
 	}
 
-	var pc windows.Handle
-
-	ret, _, err := syscall.Syscall6(
+	err = win32Hresult(syscall.Syscall6(
 		CreatePseudoConsole,
 		5,
 		uintptr(unsafe.Pointer(&size)), // _In_ COORD size
@@ -178,15 +216,7 @@ func createPseudoConsoleAndPipes() (pseudoConsole, pipeIn, pipeOut windows.Handl
 		uintptr(pipePtyOut),            // _In_ HANDLE hOutput
 		0,
 		uintptr(unsafe.Pointer(&pc)), // _Out_ HPCON* phPC
-		0)
-
-	if err != syscall.Errno(0) {
-		return
-	}
-
-	if ret != 0 {
-		err = fmt.Errorf("CreatePseudoConsole returned %X", ret)
-	}
+		0))
 
 	_ = closeThisHandle(pipePtyIn)
 	_ = closeThisHandle(pipePtyIn)
@@ -196,7 +226,7 @@ func createPseudoConsoleAndPipes() (pseudoConsole, pipeIn, pipeOut windows.Handl
 
 // Initializes the specified startup info struct with the required properties and
 // updates its thread attribute list with the specified ConPTY handle
-func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupInfoEx, error) {
+func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupInfoEx, []byte, error) {
 
 	startupInfo := new(StartupInfoEx)
 	startupInfo.StartupInfo.Cb = uint32(unsafe.Sizeof(*startupInfo))
@@ -206,149 +236,211 @@ func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupIn
 	ret, _, err := syscall.Syscall6(InitializeProcThreadAttributeList, 4,
 		0, 1, 0, uintptr(unsafe.Pointer(&attributeListSize)), 0, 0)
 
-	if err != syscall.Errno(0) {
-		return nil, err
+	if err != windows.ERROR_INSUFFICIENT_BUFFER {
+		return nil, nil, errors.Wrap(err, "Failed to compute attribute list size")
 	}
 
 	// windows.ERROR_INSUFFICIENT_BUFFER
 	// TODO: check for windows.ERROR_INSUFFICIENT_BUFFER
 
 	if ret != 0 {
-		return nil, fmt.Errorf("initializeProcThreadAttributeList ret=%x err=%v attrListsize=%v\n", ret, err, attributeListSize)
+		return nil, nil, fmt.Errorf("initializeProcThreadAttributeList ret=%x err=%v attrListsize=%v", ret, err, attributeListSize)
 	}
+
+	fmt.Printf("Allocting Attribute List %d\n", attributeListSize)
 
 	var buffer = make([]byte, int(attributeListSize))
 	startupInfo.AttributeList = &buffer[0]
 
-	ret, _, err = syscall.Syscall6(InitializeProcThreadAttributeList, 4,
-		uintptr(unsafe.Pointer(startupInfo.AttributeList)), 1, 0, uintptr(unsafe.Pointer(&attributeListSize)), 0, 0)
-	if err != syscall.Errno(0) {
-		return nil, err
-	}
+	e1 := win32Bool(syscall.Syscall6(InitializeProcThreadAttributeList, 4,
+		uintptr(unsafe.Pointer(startupInfo.AttributeList)), 1, 0, uintptr(unsafe.Pointer(&attributeListSize)), 0, 0))
 
-	// TODO: check for windows.ERROR_INSUFFICIENT_BUFFER
-	if ret != 1 {
-		return nil, fmt.Errorf("initializeProcThreadAttributeList ret=%x err=%v attrListsize=%v\n", ret, err, attributeListSize)
+	if e1 != nil {
+		return nil, nil, errors.Wrap(e1, "Failed InitializeProcThreadAttributeList")
 	}
-
-	// TODO - error check here
 
 	var ProcThreadAttributePseudoconsole uint32 = 0x00020016
 
-	ret, _, err = syscall.Syscall9(
+	e2 := win32Bool(syscall.Syscall9(
 		UpdateProcThreadAttribute,
 		7,
 		uintptr(unsafe.Pointer(startupInfo.AttributeList)),
-		uintptr(0),
+		0,
 		uintptr(ProcThreadAttributePseudoconsole),
 		uintptr(pc),
 		uintptr(unsafe.Sizeof(pc)),
 		0,
 		0,
 		0,
-		0)
+		0))
 
-	if err != syscall.Errno(0) {
-		return nil, err
-	}
-	if ret != 1 {
-		return nil, fmt.Errorf("updateProcThreadAttribute ret=%x err=%v\n", ret, err)
-	}
+	return startupInfo, buffer, errors.Wrap(e2, "Failed UpdateProcThreadAttribute")
+}
 
-	return startupInfo, nil
+// StringToUTF16Ptr converts a Go string into a pointer to a null-terminated UTF-16 wide string.
+// This assumes str is of a UTF-8 compatible encoding so that it can be re-encoded as UTF-16.
+func StringToUTF16Ptr(str string) *uint16 {
+	wchars := utf16.Encode([]rune(str + "\x00"))
+	return &wchars[0]
+}
+
+// StringToCharPtr converts a Go string into pointer to a null-terminated cstring.
+// This assumes the go string is already ANSI encoded.
+func StringToCharPtr(str string) *uint8 {
+	chars := append([]byte(str), 0) // null terminated
+	return &chars[0]
 }
 
 func echo() error {
-	// TODO: copy to go format
-	szCommand := "ping localhost" // wchar_t
+	szCommand := ("ping localhost")
 
 	pc, pipeIn, pipeOut, err := createPseudoConsoleAndPipes()
 
 	if err != nil {
-		return err
+		return errors.Wrap(err, "failed to create pipes")
 	}
 
 	// Create & start thread to listen to the incoming pipe
 	// Note: Using CRT-safe _beginthread() rather than CreateThread()
 	//   HANDLE hPipeListenerThread{ reinterpret_cast<HANDLE>(_beginthread(PipeListener, 0, hPipeIn)) };
 
-	startupInfo, err := InitializeStartupInfoAttachedToPseudoConsole(pc)
+	go PipeListener(pipeIn)
+
+	startupInfo, buffer, err := InitializeStartupInfoAttachedToPseudoConsole(pc)
+
+	if err != nil {
+		return errors.Wrap(err, "failed to InitializeStartupInfoAttachedToPseudoConsole")
+	}
+
+	var piClient syscall.ProcessInformation
+
+	//prettyPrint(*startupInfo)
+
+	err = win32Bool(syscall.Syscall12(CreateProcessA,
+		10,
+		0,
+		uintptr(unsafe.Pointer(StringToCharPtr(szCommand))),
+		0,
+		0,
+		0,
+		uintptr(windows.EXTENDED_STARTUPINFO_PRESENT),
+		0,
+		0,
+		uintptr(unsafe.Pointer(startupInfo)),
+		uintptr(unsafe.Pointer(&piClient)),
+		0,
+		0))
+
+	if err != nil {
+
+		if errno, ok := err.(syscall.Errno); ok {
+			return errors.Wrapf(err, "Create process failed with errno %X", uintptr(errno))
+		}
+
+		return errors.Wrap(err, "Create process failed")
+	}
+
+	// Wait up to 10s for ping process to complete
+	r1, r2, err := syscall.Syscall(WaitForSingleObject, 2, uintptr(piClient.Thread), 10*1000, 0)
+	fmt.Printf("WaitForSingleObject returned %X %X %v\n", r1, r2, err)
+	if err != syscall.Errno(0) {
+		return errors.Wrap(err, "WaitForSingleObjectd")
+	}
+
+	// Allow listening thread to catch-up with final output!
+	//		Sleep(500);
+	time.Sleep(500 * time.Millisecond)
+
+	// --- CLOSEDOWN ---
+	// Now safe to clean-up client app's process-info & thread
+
+	_ = closeThisHandle(windows.Handle(piClient.Thread))
+	_ = closeThisHandle(windows.Handle(piClient.Process))
+
+	// Cleanup attribute list
+
+	err = win32Void(syscall.Syscall(DeleteProcThreadAttributeList, 1, uintptr(unsafe.Pointer(startupInfo.AttributeList)), 0, 0))
+
+	if err != nil {
+		return errors.Wrap(err, "DeleteProcThreadAttributeList")
+	}
+
+	// free(startupInfo.lpAttributeList); This is GCed by golang
+
+	// Close ConPTY - this will terminate client process if running
+
+	err = win32Void(syscall.Syscall(ClosePseudoConsole, 1, uintptr(pc), 0, 0)) // _In_ HPCON hPC
+
+	if err != nil {
+		return errors.Wrap(err, "ClosePseudoConsole")
+	}
+
+	// Clean-up the pipes
+
+	_ = closeThisHandle(pipeOut)
+	_ = closeThisHandle(pipeIn)
+
+	fmt.Printf("Buffer: %v\n", buffer)
+
+	return nil
+
 }
 
-/*
-            {
-                // Launch ping to emit some text back via the pipe
-                PROCESS_INFORMATION piClient{};
-                hr = CreateProcess(
-                    NULL,                           // No module name - use Command Line
-                    szCommand,                      // Command Line
-                    NULL,                           // Process handle not inheritable
-                    NULL,                           // Thread handle not inheritable
-                    FALSE,                          // Inherit handles
-                    EXTENDED_STARTUPINFO_PRESENT,   // Creation flags
-                    NULL,                           // Use parent's environment block
-                    NULL,                           // Use parent's starting directory
-                    &startupInfo.StartupInfo,       // Pointer to STARTUPINFO
-                    &piClient)                      // Pointer to PROCESS_INFORMATION
-                    ? S_OK
-                    : GetLastError();
+func PipeListener(pipe windows.Handle) {
+	fmt.Printf("go started with arg: %s\n", pipe)
 
-                if (S_OK == hr)
-                {
-                    // Wait up to 10s for ping process to complete
-                    WaitForSingleObject(piClient.hThread, 10 * 1000);
+	console, err := getStdOut()
 
-                    // Allow listening thread to catch-up with final output!
-                    Sleep(500);
-                }
+	if err != nil {
+		panic(err) // TODO: error channel
+	}
 
-                // --- CLOSEDOWN ---
+	fmt.Printf("Got a console %v\n", console)
 
-                // Now safe to clean-up client app's process-info & thread
-                CloseHandle(piClient.hThread);
-                CloseHandle(piClient.hProcess);
+	// const DWORD BUFF_SIZE{ 512 };
+	const buffSize = 512
 
-                // Cleanup attribute list
-                DeleteProcThreadAttributeList(startupInfo.lpAttributeList);
-                free(startupInfo.lpAttributeList);
-            }
+	szBuffer := make([]byte, buffSize)
 
-            // Close ConPTY - this will terminate client process if running
-            ClosePseudoConsole(hPC);
+	var dwBytesRead Dword
+	var dwBytesWritten Dword
 
-            // Clean-up the pipes
-            if (INVALID_HANDLE_VALUE != hPipeOut) CloseHandle(hPipeOut);
-            if (INVALID_HANDLE_VALUE != hPipeIn) CloseHandle(hPipeIn);
-        }
-    }
+	for {
+		// Read from the pipe
 
-    return S_OK == hr ? EXIT_SUCCESS : EXIT_FAILURE;
+		// TODO: syscall.ReadFile
+		fRead, _, err := syscall.Syscall6(ReadFile, 5, uintptr(pipe), uintptr(unsafe.Pointer(&szBuffer[0])), buffSize, uintptr(unsafe.Pointer(&dwBytesRead)), 0, 0)
+
+		if err != syscall.Errno(0) {
+			panic(err)
+		}
+
+		// TODO: syscall.WriteFile
+		_, _, err = syscall.Syscall6(WriteFile, 5, uintptr(console), uintptr(unsafe.Pointer(&szBuffer[0])), uintptr(dwBytesRead), uintptr(unsafe.Pointer(&dwBytesWritten)), 0, 0)
+
+		if err != syscall.Errno(0) {
+			panic(err)
+		}
+
+		if fRead == 0 {
+			break
+		}
+
+		if dwBytesRead < 1 {
+			break
+		}
+	}
 }
 
-/*
+func main() {
+	if err := enableVirtualTerminalProcessing(); err != nil {
+		fmt.Printf("enableVirtualTerminalProcessing failed %v\n", err)
+		os.Exit(1)
 
+	}
+	if err := echo(); err != nil {
+		fmt.Printf("echo failed %v\n", err)
+		os.Exit(1)
+	}
 
-void __cdecl PipeListener(LPVOID pipe)
-{
-    HANDLE hPipe{ pipe };
-    HANDLE hConsole{ GetStdHandle(STD_OUTPUT_HANDLE) };
-
-    const DWORD BUFF_SIZE{ 512 };
-    char szBuffer[BUFF_SIZE]{};
-
-    DWORD dwBytesWritten{};
-    DWORD dwBytesRead{};
-    BOOL fRead{ FALSE };
-    do
-    {
-        // Read from the pipe
-        fRead = ReadFile(hPipe, szBuffer, BUFF_SIZE, &dwBytesRead, NULL);
-
-        // Write received text to the Console
-        // Note: Write to the Console using WriteFile(hConsole...), not printf()/puts() to
-        // prevent partially-read VT sequences from corrupting output
-        WriteFile(hConsole, szBuffer, dwBytesRead, &dwBytesWritten, NULL);
-
-    } while (fRead && dwBytesRead >= 0);
 }
-*/
