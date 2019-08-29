@@ -81,7 +81,7 @@ type ConsoleScreenBufferInfo struct {
 
 // StartupInfoEx lint me
 type StartupInfoEx struct {
-	syscall.StartupInfo
+	windows.StartupInfo
 	AttributeList *byte
 }
 
@@ -119,7 +119,7 @@ func win32Void(r1, r2 uintptr, err error) error {
 func getScreenSize() (size *Coord, err error) {
 	// Determine required size of Pseudo Console
 	var consoleSize = new(Coord)
-	var csbi ConsoleScreenBufferInfo
+	var csbi windows.ConsoleScreenBufferInfo
 
 	console, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
 
@@ -127,21 +127,20 @@ func getScreenSize() (size *Coord, err error) {
 		return nil, err
 	}
 
-	err = win32Bool(syscall.Syscall(GetConsoleScreenBufferInfo, 2, uintptr(console), uintptr(unsafe.Pointer(&csbi)), 0))
+	err = windows.GetConsoleScreenBufferInfo(console, &csbi)
 
 	if err != nil {
 		return nil, err
 	}
 
-	consoleSize.X = uint16(csbi.srWindow.Right - csbi.srWindow.Left + 1)
-	consoleSize.Y = uint16(csbi.srWindow.Bottom - csbi.srWindow.Top + 1)
+	consoleSize.X = uint16(csbi.Window.Right - csbi.Window.Left + 1)
+	consoleSize.Y = uint16(csbi.Window.Bottom - csbi.Window.Top + 1)
 
 	return consoleSize, nil
 }
 
 func createPipes() (read, write windows.Handle, err error) {
-	read, write = windows.InvalidHandle, windows.InvalidHandle
-	err = win32Bool(syscall.Syscall6(CreatePipe, 4, uintptr(unsafe.Pointer(&read)), uintptr(unsafe.Pointer(&write)), 0, 0, 0, 0))
+	err = windows.CreatePipe(&read, &write, nil, 0)
 	return
 }
 
@@ -244,29 +243,11 @@ func echo() error {
 		return errors.Wrap(err, "failed to InitializeStartupInfoAttachedToPseudoConsole")
 	}
 
-	var piClient syscall.ProcessInformation
+	var piClient windows.ProcessInformation
 
-	err = win32Bool(syscall.Syscall12(CreateProcessW,
-		10,
-		0,
-		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(szCommand))),
-		0,
-		0,
-		0,
-		uintptr(windows.EXTENDED_STARTUPINFO_PRESENT),
-		0,
-		0,
-		uintptr(unsafe.Pointer(startupInfo)),
-		uintptr(unsafe.Pointer(&piClient)),
-		0,
-		0))
+	err = windows.CreateProcess(nil, syscall.StringToUTF16Ptr(szCommand), nil, nil, false, windows.EXTENDED_STARTUPINFO_PRESENT, nil, nil, &startupInfo.StartupInfo, &piClient)
 
 	if err != nil {
-
-		if errno, ok := err.(syscall.Errno); ok {
-			return errors.Wrapf(err, "Create process failed with errno %X", uintptr(errno))
-		}
-
 		return errors.Wrap(err, "Create process failed")
 	}
 
