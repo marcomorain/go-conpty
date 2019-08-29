@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"syscall"
@@ -35,17 +34,6 @@ var (
 	WaitForSingleObject, _               = windows.GetProcAddress(kernel32, "WaitForSingleObject")
 	WriteFile, _                         = windows.GetProcAddress(kernel32, "WriteFile")
 )
-
-func prettyPrint(data interface{}) {
-	var p []byte
-	//    var err := error
-	p, err := json.MarshalIndent(data, "", "\t")
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	fmt.Printf("%s \n", p)
-}
 
 type Dword uint32
 
@@ -170,7 +158,9 @@ func getScreenSize() (size *Coord, err error) {
 
 	err = win32Bool(syscall.Syscall(GetConsoleScreenBufferInfo, 2, console, uintptr(unsafe.Pointer(&csbi)), 0))
 
-	// TODO: error checking
+	if err != nil {
+		return nil, err
+	}
 
 	consoleSize.X = uint16(csbi.srWindow.Right - csbi.srWindow.Left + 1)
 	consoleSize.Y = uint16(csbi.srWindow.Bottom - csbi.srWindow.Top + 1)
@@ -240,9 +230,6 @@ func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupIn
 		return nil, nil, errors.Wrap(err, "Failed to compute attribute list size")
 	}
 
-	// windows.ERROR_INSUFFICIENT_BUFFER
-	// TODO: check for windows.ERROR_INSUFFICIENT_BUFFER
-
 	if ret != 0 {
 		return nil, nil, fmt.Errorf("initializeProcThreadAttributeList ret=%x err=%v attrListsize=%v", ret, err, attributeListSize)
 	}
@@ -292,7 +279,7 @@ func StringToCharPtr(str string) *uint8 {
 }
 
 func echo() error {
-	szCommand := ("ping localhost")
+	szCommand := "ping localhost"
 
 	pc, pipeIn, pipeOut, err := createPseudoConsoleAndPipes()
 
@@ -313,8 +300,6 @@ func echo() error {
 	}
 
 	var piClient syscall.ProcessInformation
-
-	//prettyPrint(*startupInfo)
 
 	err = win32Bool(syscall.Syscall12(CreateProcessA,
 		10,
