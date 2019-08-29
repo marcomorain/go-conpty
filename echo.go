@@ -225,17 +225,55 @@ func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupIn
 	return startupInfo, buffer, errors.Wrap(e2, "Failed UpdateProcThreadAttribute")
 }
 
+func Copy(dst, src windows.Handle) (written int64, err error) {
+	buffer := make([]byte, 1024)
+	written = 0
+
+	for {
+		// Read from the pipe
+		var bytesRead uint32
+		err = windows.ReadFile(src, buffer, &bytesRead, nil)
+
+		if err != nil || bytesRead == 0 {
+			return
+		}
+
+		var bytesWritten uint32
+		err = windows.WriteFile(dst, buffer[:bytesRead], &bytesWritten, nil)
+
+		if err != nil {
+			return
+		}
+
+		written += int64(bytesWritten)
+
+	}
+}
+
 func echo() error {
 	szCommand := "ping localhost"
 
-	pc, pipeIn, pipeOut, err := createPseudoConsoleAndPipes()
+	pc, pipeIn, pipeOut, err := createPseudoConsoleAndPipes() // TODO grab pipeOut
 
 	if err != nil {
 		return errors.Wrap(err, "failed to create pipes")
 	}
 
+	// Clean-up the pipes
+	defer windows.CloseHandle(pipeOut)
+	defer windows.CloseHandle(pipeIn)
+
+	console, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
+
+	if err != nil {
+		return err
+	}
+
+	stdin, err := windows.GetStdHandle(windows.STD_INPUT_HANDLE)
+
 	// Create & start thread to listen to the incoming pipe
-	go PipeListener(pipeIn)
+	go Copy(console, pipeIn)
+	go Copy(pipeOut, stdin)
 
 	startupInfo, _, err := InitializeStartupInfoAttachedToPseudoConsole(pc)
 
@@ -288,49 +326,8 @@ func echo() error {
 		return errors.Wrap(err, "ClosePseudoConsole")
 	}
 
-	// Clean-up the pipes
-
-	_ = windows.CloseHandle(pipeOut)
-	//_ = closeThisHandle(pipeIn) // done in IO goroutine
-
 	return nil
 
-}
-
-func PipeListener(pipe windows.Handle) {
-
-	console, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
-
-	if err != nil {
-		panic(err) // TODO: error channel
-	}
-
-	const buffSize = 512
-
-	szBuffer := make([]byte, buffSize)
-
-	for {
-		// Read from the pipe
-		var bytesRead uint32
-		_ = windows.ReadFile(pipe, szBuffer, &bytesRead, nil) // todo error checking
-
-		// if err != nil {
-		// 	panic(err)
-		// }
-
-		var bytesWritten uint32
-		_ = windows.WriteFile(console, szBuffer[:bytesRead], &bytesWritten, nil) // todo error checking
-
-		// if err != nil {
-		// 	panic(err)
-		// }
-
-		if bytesRead < 1 {
-			break
-		}
-	}
-
-	_ = windows.CloseHandle(pipe) // todo handle error
 }
 
 func main() {
