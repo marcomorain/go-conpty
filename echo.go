@@ -245,27 +245,30 @@ func echo() error {
 
 	var piClient windows.ProcessInformation
 
-	err = windows.CreateProcess(nil, syscall.StringToUTF16Ptr(szCommand), nil, nil, false, windows.EXTENDED_STARTUPINFO_PRESENT, nil, nil, &startupInfo.StartupInfo, &piClient)
+	err = windows.CreateProcess(nil, windows.StringToUTF16Ptr(szCommand), nil, nil, false, windows.EXTENDED_STARTUPINFO_PRESENT, nil, nil, &startupInfo.StartupInfo, &piClient)
 
 	if err != nil {
 		return errors.Wrap(err, "Create process failed")
 	}
 
 	// Wait up to 10s for ping process to complete
-	err = win32Hresult(syscall.Syscall(WaitForSingleObject, 2, uintptr(piClient.Thread), 10*1000, 0))
+	event, err := windows.WaitForSingleObject(piClient.Thread, 10*1000)
 	if err != nil {
 		return errors.Wrap(err, "WaitForSingleObjectd")
 	}
 
+	if event != 0 {
+		return fmt.Errorf("WaitForSingleObject returned event %x", event)
+	}
+
 	// Allow listening thread to catch-up with final output!
-	//		Sleep(500);
 	time.Sleep(500 * time.Millisecond)
 
 	// --- CLOSEDOWN ---
 	// Now safe to clean-up client app's process-info & thread
 
-	_ = windows.CloseHandle(windows.Handle(piClient.Thread))
-	_ = windows.CloseHandle(windows.Handle(piClient.Process))
+	_ = windows.CloseHandle(piClient.Thread)
+	_ = windows.CloseHandle(piClient.Process)
 
 	// Cleanup attribute list
 
