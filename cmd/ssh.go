@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
 
 	"github.com/marcomorain/go-win-py/pkg/pty"
 )
@@ -88,6 +89,8 @@ func runSSHServer(pc windows.Handle) {
 
 */
 func main() {
+
+	debug.SetGCPercent(-1)
 
 	// TODO
 	// defer windows.FreeLibrary(kernel32)

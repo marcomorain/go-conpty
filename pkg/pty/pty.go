@@ -1,6 +1,7 @@
 package pty
 
 import (
+	"encoding/json"
 	"fmt"
 	"syscall"
 	"time"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/pkg/errors"
 
+	"github.com/davecgh/go-spew/spew"
 	"golang.org/x/sys/windows"
 )
 
@@ -23,14 +25,14 @@ var (
 )
 
 func PrettyPrint(data interface{}) {
-	// var p []byte
-	// //    var err := error
-	// p, err := json.MarshalIndent(data, "", "\t")
-	// if err != nil {
-	// 	fmt.Println(err)
-	// 	return
-	// }
-	//fmt.Printf("%s \n", p)
+	var p []byte
+	//    var err := error
+	p, err := json.MarshalIndent(data, "", "\t")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Printf("%s \n", p)
 }
 
 // EnableVirtualTerminalProcessing Enable Console VT Processing
@@ -173,17 +175,23 @@ func Resize(pc windows.Handle, size windows.Coord) error {
 		0))
 }
 
+type GoStartupInfo struct {
+	si     StartupInfoEx
+	buffer []byte
+}
+
 // InitializeStartupInfoAttachedToPseudoConsole Initializes the specified startup info
 // struct with the required properties and updates its thread attribute list with the
 // specified ConPTY handle
-func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupInfoEx, []byte, error) {
+func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*GoStartupInfo, error) {
 
 	if pc == windows.InvalidHandle {
-		return nil, nil, errors.New("bad pc")
+		return nil, errors.New("bad pc")
 	}
 
-	startupInfo := new(StartupInfoEx)
-	startupInfo.StartupInfo.Cb = uint32(unsafe.Sizeof(*startupInfo))
+	startupInfo := new(GoStartupInfo)
+
+	startupInfo.si.Cb = uint32(unsafe.Sizeof(startupInfo.si))
 
 	var attributeListSize int64
 
@@ -191,21 +199,21 @@ func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupIn
 		0, 1, 0, uintptr(unsafe.Pointer(&attributeListSize)), 0, 0)
 
 	if err != windows.ERROR_INSUFFICIENT_BUFFER {
-		return nil, nil, errors.Wrap(err, "Failed to compute attribute list size")
+		return nil, errors.Wrap(err, "Failed to compute attribute list size")
 	}
 
 	if ret != 0 {
-		return nil, nil, fmt.Errorf("initializeProcThreadAttributeList ret=%x err=%v attrListsize=%v", ret, err, attributeListSize)
+		return nil, fmt.Errorf("initializeProcThreadAttributeList ret=%x err=%v attrListsize=%v", ret, err, attributeListSize)
 	}
 
-	var buffer = make([]byte, int(attributeListSize))
-	startupInfo.AttributeList = &buffer[0]
+	startupInfo.buffer = make([]byte, int(attributeListSize))
+	startupInfo.si.AttributeList = &startupInfo.buffer[0]
 
 	e1 := win32Bool(syscall.Syscall6(initializeProcThreadAttributeList, 4,
-		uintptr(unsafe.Pointer(startupInfo.AttributeList)), 1, 0, uintptr(unsafe.Pointer(&attributeListSize)), 0, 0))
+		uintptr(unsafe.Pointer(startupInfo.si.AttributeList)), 1, 0, uintptr(unsafe.Pointer(&attributeListSize)), 0, 0))
 
 	if e1 != nil {
-		return nil, nil, errors.Wrap(e1, "Failed InitializeProcThreadAttributeList")
+		return nil, errors.Wrap(e1, "Failed InitializeProcThreadAttributeList")
 	}
 
 	var ProcThreadAttributePseudoconsole uint32 = 0x00020016
@@ -215,7 +223,7 @@ func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupIn
 	e2 := win32Bool(syscall.Syscall9(
 		updateProcThreadAttribute,
 		7,
-		uintptr(unsafe.Pointer(startupInfo.AttributeList)),
+		uintptr(unsafe.Pointer(startupInfo.si.AttributeList)),
 		0,
 		uintptr(ProcThreadAttributePseudoconsole),
 		uintptr(pc),
@@ -225,7 +233,7 @@ func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupIn
 		0,
 		0))
 
-	return startupInfo, buffer, errors.Wrap(e2, "Failed UpdateProcThreadAttribute")
+	return startupInfo, errors.Wrap(e2, "Failed UpdateProcThreadAttribute")
 }
 
 func copy(dst, src windows.Handle, side string) (written int64, err error) {
@@ -278,7 +286,7 @@ func RunProcessWithPty(command string) error {
 
 	stdin, err := windows.GetStdHandle(windows.STD_INPUT_HANDLE)
 
-	startupInfo, buffer, err := InitializeStartupInfoAttachedToPseudoConsole(pc)
+	startupInfo, err := InitializeStartupInfoAttachedToPseudoConsole(pc)
 
 	if err != nil {
 		return errors.Wrap(err, "failed to InitializeStartupInfoAttachedToPseudoConsole")
@@ -291,9 +299,12 @@ func RunProcessWithPty(command string) error {
 	commandLine := windows.StringToUTF16Ptr(command)
 
 	inheritHandles := false
+
+	spew.Dump(startupInfo)
+
 	err = windows.CreateProcess(nil, commandLine, nil, nil, inheritHandles,
 		flags,
-		nil, nil, &(startupInfo.StartupInfo), &procInfo)
+		nil, nil, &(startupInfo.si.StartupInfo), &procInfo)
 
 	fmt.Println("process created")
 	if err != nil {
@@ -331,8 +342,6 @@ func RunProcessWithPty(command string) error {
 	// Allow listening thread to catch-up with final output!
 	time.Sleep(500 * time.Millisecond)
 
-	_ = len(buffer)
-
 	//fmt.Printf("slept ok buffer is %v\n", buffer)
 
 	// --- CLOSEDOWN ---
@@ -342,7 +351,7 @@ func RunProcessWithPty(command string) error {
 
 	// Cleanup attribute list
 
-	err = win32Void(syscall.Syscall(deleteProcThreadAttributeList, 1, uintptr(unsafe.Pointer(startupInfo.AttributeList)), 0, 0))
+	err = win32Void(syscall.Syscall(deleteProcThreadAttributeList, 1, uintptr(unsafe.Pointer(startupInfo.si.AttributeList)), 0, 0))
 
 	if err != nil {
 		return errors.Wrap(err, "DeleteProcThreadAttributeList")
