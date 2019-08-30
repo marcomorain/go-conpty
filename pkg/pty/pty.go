@@ -130,19 +130,19 @@ func createPseudoConsoleAndPipes() (pc, pipeIn, pipeOut windows.Handle, err erro
 
 	pipePtyIn, pipeOut, err := createPipes()
 	if err != nil {
-		return 0, 0, 0, errors.Wrap(err, "failed to create output pipe")
+		return 0, 0, 0, errors.Wrap(err, "failed to create pipePtyIn pipe")
 	}
 
 	defer windows.CloseHandle(pipePtyIn)
 
 	pipeIn, pipePtyOut, err := createPipes()
 	if err != nil {
-		return 0, 0, 0, errors.Wrap(err, "failed to create output pipe")
+		return 0, 0, 0, errors.Wrap(err, "failed to create pipePtyOut pipe")
 	}
 
 	defer windows.CloseHandle(pipePtyOut)
 
-	size, err := getScreenSize()
+	size, err := getScreenSize() // TODO: pass this is
 	if err != nil {
 		return 0, 0, 0, errors.Wrap(err, "failed to read screen size")
 	}
