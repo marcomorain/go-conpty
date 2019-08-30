@@ -64,7 +64,7 @@ func win32Bool(r1, r2 uintptr, err error) error {
 	//fmt.Printf("bool Win32 syscall: r1=%X r2=%X err=%v\n", r1, r2, err)
 
 	switch {
-	case err != syscall.Errno(0):
+	case err != windows.Errno(0):
 		return err
 
 	case r1 == 0:
@@ -78,7 +78,7 @@ func win32Hresult(r1, r2 uintptr, err error) error {
 	//fmt.Printf("win32Hresult: r1=%X r2=%X err=%v\n", r1, r2, err)
 
 	switch {
-	case err != syscall.Errno(0):
+	case err != windows.Errno(0):
 		return err
 
 	case r1 != 0:
@@ -90,7 +90,7 @@ func win32Hresult(r1, r2 uintptr, err error) error {
 
 func win32Void(r1, r2 uintptr, err error) error {
 	//fmt.Printf("win32Void: r1=%x r2=%x err=%v\n", r1, r2, err)
-	if err != syscall.Errno(0) {
+	if err != windows.Errno(0) {
 		return err
 	}
 	return nil
@@ -255,7 +255,7 @@ func copy(dst, src windows.Handle, side string) (written int64, err error) {
 
 // Echo test entry point
 func Echo() error {
-	szCommand := "ssh localhost" // ping
+	szCommand := "ping localhost"
 
 	pc, pipeIn, _, err := createPseudoConsoleAndPipes()
 
@@ -285,7 +285,11 @@ func Echo() error {
 
 	var piClient windows.ProcessInformation
 
-	err = windows.CreateProcess(nil, windows.StringToUTF16Ptr(szCommand), nil, nil, false, windows.EXTENDED_STARTUPINFO_PRESENT, nil, nil, &startupInfo.StartupInfo, &piClient)
+	var flags uint32 = windows.CREATE_UNICODE_ENVIRONMENT | windows.EXTENDED_STARTUPINFO_PRESENT
+
+	err = windows.CreateProcess(nil, windows.StringToUTF16Ptr(szCommand), nil, nil, false,
+		flags,
+		nil, nil, &startupInfo.StartupInfo, &piClient)
 
 	fmt.Println("process created")
 	if err != nil {
