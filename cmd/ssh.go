@@ -98,7 +98,7 @@ func main() {
 	}
 
 	fmt.Println("console is ok")
-	if err := pty.Echo(); err != nil {
+	if err := pty.RunProcessWithPty("powershell.exe"); err != nil {
 		fmt.Printf("echo failed %v\n", err)
 		os.Exit(1)
 	}

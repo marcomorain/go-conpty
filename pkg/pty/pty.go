@@ -145,6 +145,8 @@ func createPseudoConsoleAndPipes() (pc, pipeIn, pipeOut windows.Handle, err erro
 		return 0, 0, 0, errors.Wrap(err, "failed to read screen size")
 	}
 
+	fmt.Printf("Screen: %v %v\n", size.X, size.Y)
+
 	err = win32Hresult(syscall.Syscall6(
 		createPseudoConsole,
 		5,
@@ -254,10 +256,9 @@ func copy(dst, src windows.Handle, side string) (written int64, err error) {
 }
 
 // Echo test entry point
-func Echo() error {
-	szCommand := "ping localhost"
+func RunProcessWithPty(command string) error {
 
-	pc, pipeIn, _, err := createPseudoConsoleAndPipes()
+	pc, pipeIn, pipeOut, err := createPseudoConsoleAndPipes()
 
 	if err != nil {
 		return errors.Wrap(err, "failed to create pipes")
@@ -266,8 +267,8 @@ func Echo() error {
 	//fmt.Printf("pc is %x\n", pc)
 
 	// Clean-up the pipes
-	//defer windows.CloseHandle(pipeOut)
-	//defer windows.CloseHandle(pipeIn)
+	defer windows.CloseHandle(pipeOut)
+	defer windows.CloseHandle(pipeIn)
 
 	console, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
 
@@ -275,7 +276,7 @@ func Echo() error {
 		return err
 	}
 
-	_, err = windows.GetStdHandle(windows.STD_INPUT_HANDLE)
+	stdin, err := windows.GetStdHandle(windows.STD_INPUT_HANDLE)
 
 	startupInfo, buffer, err := InitializeStartupInfoAttachedToPseudoConsole(pc)
 
@@ -283,27 +284,34 @@ func Echo() error {
 		return errors.Wrap(err, "failed to InitializeStartupInfoAttachedToPseudoConsole")
 	}
 
-	var piClient windows.ProcessInformation
+	var procInfo windows.ProcessInformation
 
-	var flags uint32 = windows.CREATE_UNICODE_ENVIRONMENT | windows.EXTENDED_STARTUPINFO_PRESENT
+	var flags uint32 = windows.EXTENDED_STARTUPINFO_PRESENT
 
-	err = windows.CreateProcess(nil, windows.StringToUTF16Ptr(szCommand), nil, nil, false,
+	commandLine := windows.StringToUTF16Ptr(command)
+
+	inheritHandles := false
+	err = windows.CreateProcess(nil, commandLine, nil, nil, inheritHandles,
 		flags,
-		nil, nil, &startupInfo.StartupInfo, &piClient)
+		nil, nil, &(startupInfo.StartupInfo), &procInfo)
 
 	fmt.Println("process created")
 	if err != nil {
 		return errors.Wrap(err, "Create process failed")
 	}
 
+	defer windows.CloseHandle(procInfo.Thread)
+	defer windows.CloseHandle(procInfo.Process)
+	defer ClosePseudoConsole(pc)
+
 	//fmt.Printf("Process: %v %v Thread: %v %v\n", piClient.ProcessId, piClient.Process, piClient.ThreadId, piClient.Thread)
 
 	// Create & start thread to listen to the incoming pipe
 	go copy(console, pipeIn, "to stdout")
-	// go copy(pipeOut, stdin, "from stdin")
+	go copy(pipeOut, stdin, "from stdin")
 
 	// Wait up to 10s for ping process to complete
-	event, err := windows.WaitForSingleObject(piClient.Process, 10*1000)
+	event, err := windows.WaitForSingleObject(procInfo.Process, 10*1000)
 	if err != nil {
 		return errors.Wrap(err, "WaitForSingleObjectd")
 	}
@@ -314,9 +322,11 @@ func Echo() error {
 	//fmt.Printf("waited ok: %x\n", event)
 
 	var exitCode uint32
-	windows.GetExitCodeProcess(piClient.Process, &exitCode)
+	windows.GetExitCodeProcess(procInfo.Process, &exitCode)
 
-	fmt.Printf("exit process code: %x\n", exitCode)
+	if exitCode != 0 {
+		return fmt.Errorf("exit process code: %x", exitCode)
+	}
 
 	// Allow listening thread to catch-up with final output!
 	time.Sleep(500 * time.Millisecond)
@@ -327,9 +337,6 @@ func Echo() error {
 
 	// --- CLOSEDOWN ---
 	// Now safe to clean-up client app's process-info & thread
-
-	_ = windows.CloseHandle(piClient.Thread)
-	_ = windows.CloseHandle(piClient.Process)
 
 	fmt.Println("Handles closed ok")
 
@@ -343,14 +350,17 @@ func Echo() error {
 
 	// free(startupInfo.lpAttributeList); This is GCed by golang
 
-	// Close ConPTY - this will terminate client process if running
-
-	err = win32Void(syscall.Syscall(closePseudoConsole, 1, uintptr(pc), 0, 0)) // _In_ HPCON hPC
-
-	if err != nil {
-		return errors.Wrap(err, "ClosePseudoConsole")
-	}
-
 	return nil
 
+}
+
+func ClosePseudoConsole(pc windows.Handle) error {
+	// Close ConPTY - this will terminate client process if running
+	fmt.Printf("Closing console %v\n", pc)
+	err := win32Void(syscall.Syscall(closePseudoConsole, 1, uintptr(pc), 0, 0)) // _In_ HPCON hPC
+	err = errors.Wrap(err, "Failed to close PseudoConsole")
+	if err != nil {
+		fmt.Printf("Error: %s\n", err)
+	}
+	return err
 }
