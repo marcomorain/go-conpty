@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"runtime/debug"
 
 	"github.com/marcomorain/go-win-py/pkg/pty"
 )
@@ -90,8 +89,6 @@ func runSSHServer(pc windows.Handle) {
 */
 func main() {
 
-	debug.SetGCPercent(-1)
-
 	// TODO
 	// defer windows.FreeLibrary(kernel32)
 
@@ -101,7 +98,7 @@ func main() {
 	}
 
 	fmt.Println("console is ok")
-	if err := pty.RunProcessWithPty("powershell.exe"); err != nil {
+	if err := pty.RunProcessWithPty(`ping localhost`); err != nil {
 		fmt.Printf("echo failed %v\n", err)
 		os.Exit(1)
 	}

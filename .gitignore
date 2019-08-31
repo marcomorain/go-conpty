@@ -1,1 +1,4 @@
 *.exe
+.swo
+.swp
+.vs

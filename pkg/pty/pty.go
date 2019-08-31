@@ -56,12 +56,6 @@ func EnableVirtualTerminalProcessing() error {
 	return errors.Wrap(err, "SetConsoleMode")
 }
 
-// StartupInfoEx lint me
-type StartupInfoEx struct {
-	windows.StartupInfo
-	AttributeList *byte
-}
-
 func win32Bool(r1, r2 uintptr, err error) error {
 	//fmt.Printf("bool Win32 syscall: r1=%X r2=%X err=%v\n", r1, r2, err)
 
@@ -175,6 +169,29 @@ func Resize(pc windows.Handle, size windows.Coord) error {
 		0))
 }
 
+// This structure stores the value for each attribute
+type ProcThreadAttributeEntry struct {
+	Attribute *int32 // PROC_THREAD_ATTRIBUTE_xxx
+	cbSize    int64
+	lpValue   uintptr
+}
+
+// This structure contains a list of attributes that have been added using UpdateProcThreadAttribute
+type ProcThreadAttributeList struct {
+	Flags    int32
+	Size     int32
+	Count    int32
+	Reserved int32
+	Unknown  *uint32
+	//Entries  *ProcThreadAttributeEntry
+	Entries *byte
+}
+
+// StartupInfoEx lint me
+type StartupInfoEx struct {
+	windows.StartupInfo
+	AttributeList *ProcThreadAttributeList
+}
 type GoStartupInfo struct {
 	si     StartupInfoEx
 	buffer []byte
@@ -206,8 +223,12 @@ func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*GoStartup
 		return nil, fmt.Errorf("initializeProcThreadAttributeList ret=%x err=%v attrListsize=%v", ret, err, attributeListSize)
 	}
 
+	if attributeListSize < int64(unsafe.Sizeof(*startupInfo.si.AttributeList)) {
+		return nil, fmt.Errorf("The size is not expected %d %d", attributeListSize, unsafe.Sizeof(*startupInfo.si.AttributeList))
+	}
+
 	startupInfo.buffer = make([]byte, int(attributeListSize))
-	startupInfo.si.AttributeList = &startupInfo.buffer[0]
+	startupInfo.si.AttributeList = (*ProcThreadAttributeList)(unsafe.Pointer(&startupInfo.buffer[0]))
 
 	e1 := win32Bool(syscall.Syscall6(initializeProcThreadAttributeList, 4,
 		uintptr(unsafe.Pointer(startupInfo.si.AttributeList)), 1, 0, uintptr(unsafe.Pointer(&attributeListSize)), 0, 0))
@@ -272,7 +293,7 @@ func RunProcessWithPty(command string) error {
 		return errors.Wrap(err, "failed to create pipes")
 	}
 
-	//fmt.Printf("pc is %x\n", pc)
+	fmt.Printf("pc is %x\n", pc)
 
 	// Clean-up the pipes
 	defer windows.CloseHandle(pipeOut)
@@ -311,9 +332,9 @@ func RunProcessWithPty(command string) error {
 		return errors.Wrap(err, "Create process failed")
 	}
 
-	defer windows.CloseHandle(procInfo.Thread)
-	defer windows.CloseHandle(procInfo.Process)
 	defer ClosePseudoConsole(pc)
+	defer windows.CloseHandle(procInfo.Process)
+	defer windows.CloseHandle(procInfo.Thread)
 
 	//fmt.Printf("Process: %v %v Thread: %v %v\n", piClient.ProcessId, piClient.Process, piClient.ThreadId, piClient.Thread)
 
@@ -347,20 +368,21 @@ func RunProcessWithPty(command string) error {
 	// --- CLOSEDOWN ---
 	// Now safe to clean-up client app's process-info & thread
 
-	fmt.Println("Handles closed ok")
-
-	// Cleanup attribute list
-
-	err = win32Void(syscall.Syscall(deleteProcThreadAttributeList, 1, uintptr(unsafe.Pointer(startupInfo.si.AttributeList)), 0, 0))
+	err = DeleteProcThreadAttributeList(startupInfo.si.AttributeList)
 
 	if err != nil {
-		return errors.Wrap(err, "DeleteProcThreadAttributeList")
+		return err
 	}
 
 	// free(startupInfo.lpAttributeList); This is GCed by golang
 
 	return nil
 
+}
+
+func DeleteProcThreadAttributeList(attributeList *ProcThreadAttributeList) error {
+	err := win32Void(syscall.Syscall(deleteProcThreadAttributeList, 1, uintptr(unsafe.Pointer(attributeList)), 0, 0))
+	return errors.Wrap(err, "DeleteProcThreadAttributeList")
 }
 
 func ClosePseudoConsole(pc windows.Handle) error {
