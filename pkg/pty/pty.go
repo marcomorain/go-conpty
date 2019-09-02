@@ -3,25 +3,14 @@ package pty
 import (
 	"encoding/json"
 	"fmt"
-	"syscall"
 	"time"
 	"unsafe"
 
+	"github.com/marcomorain/go-win-py/pkg/system"
 	"github.com/pkg/errors"
 
 	"github.com/davecgh/go-spew/spew"
 	"golang.org/x/sys/windows"
-)
-
-var (
-	// TODO: handle the error and unload the library properly.
-	kernel32, _                          = windows.LoadLibrary("kernel32.dll")
-	closePseudoConsole, _                = windows.GetProcAddress(kernel32, "ClosePseudoConsole")
-	createPseudoConsole, _               = windows.GetProcAddress(kernel32, "CreatePseudoConsole")
-	deleteProcThreadAttributeList, _     = windows.GetProcAddress(kernel32, "DeleteProcThreadAttributeList")
-	initializeProcThreadAttributeList, _ = windows.GetProcAddress(kernel32, "InitializeProcThreadAttributeList")
-	resizePseudoConsole, _               = windows.GetProcAddress(kernel32, "ResizePseudoConsole")
-	updateProcThreadAttribute, _         = windows.GetProcAddress(kernel32, "UpdateProcThreadAttribute")
 )
 
 func PrettyPrint(data interface{}) {
@@ -143,15 +132,7 @@ func createPseudoConsoleAndPipes() (pc, pipeIn, pipeOut windows.Handle, err erro
 
 	fmt.Printf("Screen: %v %v\n", size.X, size.Y)
 
-	err = win32Hresult(syscall.Syscall6(
-		createPseudoConsole,
-		5,
-		uintptr(unsafe.Pointer(&size)), // _In_ COORD size
-		uintptr(pipePtyIn),             // _In_ HANDLE hInput
-		uintptr(pipePtyOut),            // _In_ HANDLE hOutput
-		0,
-		uintptr(unsafe.Pointer(&pc)), // _Out_ HPCON* phPC
-		0))
+	pc, err = system.CreatePseudoConsole(size, pipePtyIn, pipePtyOut)
 
 	if err != nil {
 		return 0, 0, 0, errors.Wrap(err, "CreatePseudoConsole failed")
@@ -159,38 +140,10 @@ func createPseudoConsoleAndPipes() (pc, pipeIn, pipeOut windows.Handle, err erro
 	return pc, pipeIn, pipeOut, nil
 }
 
-// Resize lint lint
-func Resize(pc windows.Handle, size windows.Coord) error {
-	return win32Hresult(syscall.Syscall(
-		resizePseudoConsole,
-		2,
-		uintptr(pc),                    // _In_ HPCON hPC
-		uintptr(unsafe.Pointer(&size)), // _In_ COORD size
-		0))
-}
-
-// This structure stores the value for each attribute
-type ProcThreadAttributeEntry struct {
-	Attribute *int32 // PROC_THREAD_ATTRIBUTE_xxx
-	cbSize    int64
-	lpValue   uintptr
-}
-
-// This structure contains a list of attributes that have been added using UpdateProcThreadAttribute
-type ProcThreadAttributeList struct {
-	Flags    int32
-	Size     int32
-	Count    int32
-	Reserved int32
-	Unknown  *uint32
-	//Entries  *ProcThreadAttributeEntry
-	Entries *byte
-}
-
 // StartupInfoEx lint me
 type StartupInfoEx struct {
 	windows.StartupInfo
-	AttributeList *ProcThreadAttributeList
+	AttributeList uintptr
 }
 type GoStartupInfo struct {
 	si     StartupInfoEx
@@ -212,76 +165,27 @@ func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*GoStartup
 
 	var attributeListSize int64
 
-	ret, _, err := syscall.Syscall6(initializeProcThreadAttributeList, 4,
-		0, 1, 0, uintptr(unsafe.Pointer(&attributeListSize)), 0, 0)
+	err := system.InitializeProcThreadAttributeList(0, &attributeListSize)
 
 	if err != windows.ERROR_INSUFFICIENT_BUFFER {
 		return nil, errors.Wrap(err, "Failed to compute attribute list size")
 	}
 
-	if ret != 0 {
-		return nil, fmt.Errorf("initializeProcThreadAttributeList ret=%x err=%v attrListsize=%v", ret, err, attributeListSize)
-	}
-
-	if attributeListSize < int64(unsafe.Sizeof(*startupInfo.si.AttributeList)) {
-		return nil, fmt.Errorf("The size is not expected %d %d", attributeListSize, unsafe.Sizeof(*startupInfo.si.AttributeList))
-	}
-
 	startupInfo.buffer = make([]byte, int(attributeListSize))
-	startupInfo.si.AttributeList = (*ProcThreadAttributeList)(unsafe.Pointer(&startupInfo.buffer[0]))
+	startupInfo.si.AttributeList = uintptr(unsafe.Pointer(&startupInfo.buffer[0]))
 
-	e1 := win32Bool(syscall.Syscall6(initializeProcThreadAttributeList, 4,
-		uintptr(unsafe.Pointer(startupInfo.si.AttributeList)), 1, 0, uintptr(unsafe.Pointer(&attributeListSize)), 0, 0))
+	err = system.InitializeProcThreadAttributeList(startupInfo.si.AttributeList, &attributeListSize)
 
-	if e1 != nil {
-		return nil, errors.Wrap(e1, "Failed InitializeProcThreadAttributeList")
+	if err != nil {
+		return nil, errors.Wrap(err, "Failed InitializeProcThreadAttributeList")
 	}
 
 	var ProcThreadAttributePseudoconsole uint32 = 0x00020016
 
 	PrettyPrint(startupInfo)
 
-	e2 := win32Bool(syscall.Syscall9(
-		updateProcThreadAttribute,
-		7,
-		uintptr(unsafe.Pointer(startupInfo.si.AttributeList)),
-		0,
-		uintptr(ProcThreadAttributePseudoconsole),
-		uintptr(pc),
-		uintptr(unsafe.Sizeof(pc)),
-		0,
-		0,
-		0,
-		0))
-
-	return startupInfo, errors.Wrap(e2, "Failed UpdateProcThreadAttribute")
-}
-
-func copy(dst, src windows.Handle, side string) (written int64, err error) {
-	buffer := make([]byte, 1024)
-	written = 0
-
-	for {
-		// Read from the pipe
-		var bytesRead uint32
-		err = windows.ReadFile(src, buffer, &bytesRead, nil)
-
-		if err != nil || bytesRead == 0 {
-			//fmt.Printf("%s: closing after read bytesRead: %d written: %d err: %v\n", side, bytesRead, written, err)
-			return
-		}
-
-		var bytesWritten uint32
-		err = windows.WriteFile(dst, buffer[:bytesRead], &bytesWritten, nil)
-
-		if err != nil {
-			//fmt.Printf("%s: closing after write bytesWritten: %d written: %d err: %v\n", side, bytesWritten, written, err)
-			return
-		}
-
-		written += int64(bytesWritten)
-
-	}
+	err = system.UpdateProcThreadAttribute(startupInfo.si.AttributeList, ProcThreadAttributePseudoconsole, uintptr(pc), unsafe.Sizeof(pc))
+	return startupInfo, errors.Wrap(err, "Failed UpdateProcThreadAttribute")
 }
 
 // Echo test entry point
@@ -332,15 +236,15 @@ func RunProcessWithPty(command string) error {
 		return errors.Wrap(err, "Create process failed")
 	}
 
-	defer ClosePseudoConsole(pc)
+	defer system.ClosePseudoConsole(pc)
 	defer windows.CloseHandle(procInfo.Process)
 	defer windows.CloseHandle(procInfo.Thread)
 
 	//fmt.Printf("Process: %v %v Thread: %v %v\n", piClient.ProcessId, piClient.Process, piClient.ThreadId, piClient.Thread)
 
 	// Create & start thread to listen to the incoming pipe
-	go copy(console, pipeIn, "to stdout")
-	go copy(pipeOut, stdin, "from stdin")
+	go system.Copy(console, pipeIn)
+	go system.Copy(pipeOut, stdin)
 
 	// Wait up to 10s for ping process to complete
 	event, err := windows.WaitForSingleObject(procInfo.Process, 10*1000)
@@ -368,30 +272,10 @@ func RunProcessWithPty(command string) error {
 	// --- CLOSEDOWN ---
 	// Now safe to clean-up client app's process-info & thread
 
-	err = DeleteProcThreadAttributeList(startupInfo.si.AttributeList)
-
-	if err != nil {
-		return err
-	}
+	err = system.DeleteProcThreadAttributeList(startupInfo.si.AttributeList)
 
 	// free(startupInfo.lpAttributeList); This is GCed by golang
 
-	return nil
-
-}
-
-func DeleteProcThreadAttributeList(attributeList *ProcThreadAttributeList) error {
-	err := win32Void(syscall.Syscall(deleteProcThreadAttributeList, 1, uintptr(unsafe.Pointer(attributeList)), 0, 0))
-	return errors.Wrap(err, "DeleteProcThreadAttributeList")
-}
-
-func ClosePseudoConsole(pc windows.Handle) error {
-	// Close ConPTY - this will terminate client process if running
-	fmt.Printf("Closing console %v\n", pc)
-	err := win32Void(syscall.Syscall(closePseudoConsole, 1, uintptr(pc), 0, 0)) // _In_ HPCON hPC
-	err = errors.Wrap(err, "Failed to close PseudoConsole")
-	if err != nil {
-		fmt.Printf("Error: %s\n", err)
-	}
 	return err
+
 }
