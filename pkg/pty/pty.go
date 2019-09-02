@@ -226,7 +226,7 @@ func RunProcessWithPty(command string) error {
 		return errors.Wrap(err, "failed to InitializeStartupInfoAttachedToPseudoConsole")
 	}
 
-	var procInfo windows.ProcessInformation
+	procInfo := new(windows.ProcessInformation)
 
 	var flags uint32 = windows.EXTENDED_STARTUPINFO_PRESENT
 
@@ -236,7 +236,7 @@ func RunProcessWithPty(command string) error {
 
 	err = windows.CreateProcess(nil, commandLine, nil, nil, inheritHandles,
 		flags,
-		nil, nil, &(startupInfo.StartupInfo), &procInfo)
+		nil, nil, &startupInfo.StartupInfo, procInfo)
 
 	if err != nil {
 		return errors.Wrap(err, "Create process failed")

@@ -115,12 +115,12 @@ func CreatePseudoConsole(size *windows.Coord, input, output windows.Handle) (pc 
 
 // ResizePseudoConsole Resizes the internal buffers for a pseudoconsole to the given size.
 // https://docs.microsoft.com/en-us/windows/console/resizepseudoconsole
-func ResizePseudoConsole(pc windows.Handle, size windows.Coord) error {
+func ResizePseudoConsole(pc windows.Handle, size *windows.Coord) error {
 	return win32Hresult(syscall.Syscall(
 		resizePseudoConsole,
 		2,
-		uintptr(pc),                    // _In_ HPCON hPC
-		uintptr(unsafe.Pointer(&size)), // _In_ COORD size
+		uintptr(pc),                   // _In_ HPCON hPC
+		uintptr(unsafe.Pointer(size)), // _In_ COORD size
 		0))
 }
 
