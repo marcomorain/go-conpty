@@ -14,6 +14,8 @@ var (
 	kernel32, _                          = windows.LoadLibrary("kernel32.dll")
 	closePseudoConsole, _                = windows.GetProcAddress(kernel32, "ClosePseudoConsole")
 	createPseudoConsole, _               = windows.GetProcAddress(kernel32, "CreatePseudoConsole")
+	getProcessHeap, _                    = windows.GetProcAddress(kernel32, "GetProcessHeap")
+	heapAlloc, _                         = windows.GetProcAddress(kernel32, "HeapAlloc")
 	deleteProcThreadAttributeList, _     = windows.GetProcAddress(kernel32, "DeleteProcThreadAttributeList")
 	initializeProcThreadAttributeList, _ = windows.GetProcAddress(kernel32, "InitializeProcThreadAttributeList")
 	resizePseudoConsole, _               = windows.GetProcAddress(kernel32, "ResizePseudoConsole")
@@ -54,6 +56,14 @@ func win32Void(r1, r2 uintptr, err error) error {
 		return err
 	}
 	return nil
+}
+
+func win32Handle(r1, r2 uintptr, err error) (uintptr, error) {
+	fmt.Printf("win32Handle: r1=%x r2=%x err=%v\n", r1, r2, err)
+	if err != windows.Errno(0) {
+		return 0, err
+	}
+	return r1, nil
 }
 
 // InitializeProcThreadAttributeList Initializes the specified list of attributes for process and thread creation.
@@ -177,4 +187,18 @@ func Copy(dst, src windows.Handle) (written int64, err error) {
 		written += int64(bytesWritten)
 
 	}
+}
+
+// GetProcessHeap Retrieves a handle to the default heap of the calling process.
+// This handle can then be used in subsequent calls to the heap functions.
+// https://docs.microsoft.com/en-gb/windows/win32/api/heapapi/nf-heapapi-getprocessheap
+func GetProcessHeap() (windows.Handle, error) {
+	heap, err := win32Handle(syscall.Syscall(getProcessHeap, 0, 0, 0, 0))
+	return windows.Handle(heap), err
+}
+
+// HeapAlloc Allocates a block of memory from a heap. The allocated memory is not movable.
+// https://docs.microsoft.com/en-us/windows/win32/api/heapapi/nf-heapapi-heapalloc
+func HeapAlloc(heap windows.Handle, flags uint32, bytes uintptr) (uintptr, error) {
+	return win32Handle(syscall.Syscall(heapAlloc, 3, uintptr(heap), uintptr(flags), bytes))
 }

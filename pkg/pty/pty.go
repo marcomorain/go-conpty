@@ -145,23 +145,19 @@ type StartupInfoEx struct {
 	windows.StartupInfo
 	AttributeList uintptr
 }
-type GoStartupInfo struct {
-	si     StartupInfoEx
-	buffer []byte
-}
 
 // InitializeStartupInfoAttachedToPseudoConsole Initializes the specified startup info
 // struct with the required properties and updates its thread attribute list with the
 // specified ConPTY handle
-func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*GoStartupInfo, error) {
+func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupInfoEx, error) {
 
 	if pc == windows.InvalidHandle {
 		return nil, errors.New("bad pc")
 	}
 
-	startupInfo := new(GoStartupInfo)
+	startupInfo := new(StartupInfoEx)
 
-	startupInfo.si.Cb = uint32(unsafe.Sizeof(startupInfo.si))
+	startupInfo.StartupInfo.Cb = uint32(unsafe.Sizeof(*startupInfo))
 
 	var attributeListSize int64
 
@@ -171,10 +167,22 @@ func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*GoStartup
 		return nil, errors.Wrap(err, "Failed to compute attribute list size")
 	}
 
-	startupInfo.buffer = make([]byte, int(attributeListSize))
-	startupInfo.si.AttributeList = uintptr(unsafe.Pointer(&startupInfo.buffer[0]))
+	heap, err := system.GetProcessHeap()
 
-	err = system.InitializeProcThreadAttributeList(startupInfo.si.AttributeList, &attributeListSize)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get heap to alloc from")
+	}
+
+	const HeapZeroMemory = 0x00000008
+	startupInfo.AttributeList, err = system.HeapAlloc(heap, HeapZeroMemory, uintptr(attributeListSize))
+
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to allocate memory")
+	}
+
+	spew.Dump(startupInfo)
+
+	err = system.InitializeProcThreadAttributeList(startupInfo.AttributeList, &attributeListSize)
 
 	if err != nil {
 		return nil, errors.Wrap(err, "Failed InitializeProcThreadAttributeList")
@@ -182,9 +190,10 @@ func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*GoStartup
 
 	var ProcThreadAttributePseudoconsole uint32 = 0x00020016
 
-	PrettyPrint(startupInfo)
+	//PrettyPrint(startupInfo)
 
-	err = system.UpdateProcThreadAttribute(startupInfo.si.AttributeList, ProcThreadAttributePseudoconsole, uintptr(pc), unsafe.Sizeof(pc))
+	err = system.UpdateProcThreadAttribute(startupInfo.AttributeList, ProcThreadAttributePseudoconsole, uintptr(pc), unsafe.Sizeof(pc))
+
 	return startupInfo, errors.Wrap(err, "Failed UpdateProcThreadAttribute")
 }
 
@@ -225,13 +234,10 @@ func RunProcessWithPty(command string) error {
 
 	inheritHandles := false
 
-	spew.Dump(startupInfo)
-
 	err = windows.CreateProcess(nil, commandLine, nil, nil, inheritHandles,
 		flags,
-		nil, nil, &(startupInfo.si.StartupInfo), &procInfo)
+		nil, nil, &(startupInfo.StartupInfo), &procInfo)
 
-	fmt.Println("process created")
 	if err != nil {
 		return errors.Wrap(err, "Create process failed")
 	}
@@ -240,7 +246,7 @@ func RunProcessWithPty(command string) error {
 	defer windows.CloseHandle(procInfo.Process)
 	defer windows.CloseHandle(procInfo.Thread)
 
-	//fmt.Printf("Process: %v %v Thread: %v %v\n", piClient.ProcessId, piClient.Process, piClient.ThreadId, piClient.Thread)
+	fmt.Printf("Process: %v %v Thread: %v %v\n", procInfo.ProcessId, procInfo.Process, procInfo.ThreadId, procInfo.Thread)
 
 	// Create & start thread to listen to the incoming pipe
 	go system.Copy(console, pipeIn)
@@ -260,6 +266,8 @@ func RunProcessWithPty(command string) error {
 	var exitCode uint32
 	windows.GetExitCodeProcess(procInfo.Process, &exitCode)
 
+	spew.Dump(startupInfo)
+
 	if exitCode != 0 {
 		return fmt.Errorf("exit process code: %x", exitCode)
 	}
@@ -272,7 +280,7 @@ func RunProcessWithPty(command string) error {
 	// --- CLOSEDOWN ---
 	// Now safe to clean-up client app's process-info & thread
 
-	err = system.DeleteProcThreadAttributeList(startupInfo.si.AttributeList)
+	err = system.DeleteProcThreadAttributeList(startupInfo.AttributeList)
 
 	// free(startupInfo.lpAttributeList); This is GCed by golang
 
