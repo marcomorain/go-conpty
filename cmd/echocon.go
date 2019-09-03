@@ -1,8 +1,5 @@
 package main
 
-/*
-
-
 import (
 	"fmt"
 	"os"
@@ -10,6 +7,7 @@ import (
 	"github.com/marcomorain/go-win-py/pkg/pty"
 )
 
+/*
 func runSSHServer(pc windows.Handle) {
 
 	ssh.Handle(func(session ssh.Session) {
@@ -89,3 +87,20 @@ func runSSHServer(pc windows.Handle) {
 // runSSHServer(pc)
 
 */
+func main() {
+
+	// TODO
+	// defer windows.FreeLibrary(kernel32)
+
+	if err := pty.EnableVirtualTerminalProcessing(); err != nil {
+		fmt.Printf("enableVirtualTerminalProcessing failed %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("console is ok")
+	if err := pty.RunProcessWithPty(`ping localhost`); err != nil {
+		fmt.Printf("echo failed %v\n", err)
+		os.Exit(1)
+	}
+
+}
