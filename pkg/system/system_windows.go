@@ -82,7 +82,7 @@ func InitializeProcThreadAttributeList(attributeList uintptr, size *int64) error
 // UpdateProcThreadAttribute Updates the specified attribute in a list of attributes for process and thread creation.
 // https://docs.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute
 func UpdateProcThreadAttribute(attributeList uintptr, flags uint32, value, size uintptr) error {
-	fmt.Printf("UpdateProcThreadAttribute value=%08x size=%d\n", value, size)
+	// fmt.Printf("UpdateProcThreadAttribute value=%08x size=%d\n", value, size)
 	return win32Bool(syscall.Syscall9(
 		updateProcThreadAttribute,
 		7,

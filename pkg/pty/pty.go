@@ -2,6 +2,8 @@ package pty
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"time"
 	"unsafe"
 
@@ -32,42 +34,6 @@ func EnableVirtualTerminalProcessing() error {
 	return errors.Wrap(err, "SetConsoleMode")
 }
 
-func win32Bool(r1, r2 uintptr, err error) error {
-	//fmt.Printf("bool Win32 syscall: r1=%X r2=%X err=%v\n", r1, r2, err)
-
-	switch {
-	case err != windows.Errno(0):
-		return err
-
-	case r1 == 0:
-		return fmt.Errorf("bool Win32 syscall failed: r1=%X r2=%X err=%v", r1, r2, err)
-	default:
-		return nil
-	}
-}
-
-func win32Hresult(r1, r2 uintptr, err error) error {
-	//fmt.Printf("win32Hresult: r1=%X r2=%X err=%v\n", r1, r2, err)
-
-	switch {
-	case err != windows.Errno(0):
-		return err
-
-	case r1 != 0:
-		return fmt.Errorf("hresult Win32 syscall faild: r1=%X r2=%X err=%v", r1, r2, err)
-	default:
-		return nil
-	}
-}
-
-func win32Void(r1, r2 uintptr, err error) error {
-	//fmt.Printf("win32Void: r1=%x r2=%x err=%v\n", r1, r2, err)
-	if err != windows.Errno(0) {
-		return err
-	}
-	return nil
-}
-
 func getScreenSize() (size *windows.Coord, err error) {
 	// Determine required size of Pseudo Console
 	var consoleSize = new(windows.Coord)
@@ -91,38 +57,39 @@ func getScreenSize() (size *windows.Coord, err error) {
 	return consoleSize, nil
 }
 
+// TODO: remove
 func createPipes() (read, write windows.Handle, err error) {
 	err = windows.CreatePipe(&read, &write, nil, 0)
 	return
 }
 
-func createPseudoConsoleAndPipes() (pc, pipeIn, pipeOut windows.Handle, err error) {
+func createPseudoConsoleAndPipes() (pc windows.Handle, pipeIn, pipeOut *os.File, err error) {
 
-	pipePtyIn, pipeOut, err := createPipes()
+	pipePtyIn, pipeOut, err := os.Pipe()
 	if err != nil {
-		return 0, 0, 0, errors.Wrap(err, "failed to create pipePtyIn pipe")
+		return windows.InvalidHandle, nil, nil, errors.Wrap(err, "failed to create pipePtyIn pipe")
 	}
 
-	defer windows.CloseHandle(pipePtyIn)
+	defer pipePtyIn.Close()
 
-	pipeIn, pipePtyOut, err := createPipes()
+	pipeIn, pipePtyOut, err := os.Pipe()
 	if err != nil {
-		return 0, 0, 0, errors.Wrap(err, "failed to create pipePtyOut pipe")
+		return windows.InvalidHandle, nil, nil, errors.Wrap(err, "failed to create pipePtyOut pipe")
 	}
 
-	defer windows.CloseHandle(pipePtyOut)
+	defer pipePtyOut.Close()
 
 	size, err := getScreenSize() // TODO: pass this is
 	if err != nil {
-		return 0, 0, 0, errors.Wrap(err, "failed to read screen size")
+		return 0, nil, nil, errors.Wrap(err, "failed to read screen size")
 	}
 
 	//fmt.Printf("Screen: %v %v\n", size.X, size.Y)
 
-	console, err := system.CreatePseudoConsole(size, pipePtyIn, pipePtyOut)
+	console, err := system.CreatePseudoConsole(size, windows.Handle(pipePtyIn.Fd()), windows.Handle(pipePtyOut.Fd()))
 
 	if err != nil {
-		return 0, 0, 0, errors.Wrap(err, "CreatePseudoConsole failed")
+		return windows.InvalidHandle, nil, nil, errors.Wrap(err, "CreatePseudoConsole failed")
 	}
 	return console, pipeIn, pipeOut, nil
 }
@@ -161,6 +128,8 @@ func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupIn
 	}
 
 	const HeapZeroMemory = 0x00000008
+
+	// TODO: Use an []byte rather than heap alloc here?
 	startupInfo.AttributeList, err = system.HeapAlloc(heap, HeapZeroMemory, uintptr(attributeListSize))
 
 	if err != nil {
@@ -180,8 +149,8 @@ func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupIn
 	return startupInfo, errors.Wrap(err, "Failed UpdateProcThreadAttribute")
 }
 
-// Echo test entry point
-func RunProcessWithPty(command string) error {
+// RunProcessWithPty runs the process in a PTY
+func RunProcessWithPty(command string, stdin io.Reader, stdout io.Writer) error {
 
 	pc, pipeIn, pipeOut, err := createPseudoConsoleAndPipes()
 
@@ -192,16 +161,16 @@ func RunProcessWithPty(command string) error {
 	//fmt.Printf("pc is 0x%08X\n", pc)
 
 	// Clean-up the pipes
-	defer windows.CloseHandle(pipeOut)
-	defer windows.CloseHandle(pipeIn)
+	defer pipeOut.Close()
+	defer pipeIn.Close()
 
-	console, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
+	//console, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
 
 	if err != nil {
 		return err
 	}
 
-	stdin, err := windows.GetStdHandle(windows.STD_INPUT_HANDLE)
+	//stdin, err := windows.GetStdHandle(windows.STD_INPUT_HANDLE)
 
 	startupInfo, err := InitializeStartupInfoAttachedToPseudoConsole(pc)
 
@@ -232,8 +201,8 @@ func RunProcessWithPty(command string) error {
 	//fmt.Printf("Process: %v %v Thread: %v %v\n", procInfo.ProcessId, procInfo.Process, procInfo.ThreadId, procInfo.Thread)
 
 	// Create & start thread to listen to the incoming pipe
-	go system.Copy(console, pipeIn)
-	go system.Copy(pipeOut, stdin)
+	go io.Copy(stdout, pipeIn)
+	go io.Copy(pipeOut, stdin)
 
 	// Wait up to 10s for ping process to complete
 	event, err := windows.WaitForSingleObject(procInfo.Process, 10*1000)
