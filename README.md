@@ -1,10 +1,6 @@
 # Go ConPTY
 
-<<<<<<< HEAD
 This library exposes the (Windows ConPTY API)[https://blogs.msdn.microsoft.com/commandline/2018/08/02/windows-command-line-introducing-the-windows-pseudo-console-conpty/] to `golang`. It was written by [CircleCI](https://circleci.com).
-=======
-This library exposes the (Windows ConPTY API)[https://blogs.msdn.microsoft.com/commandline/2018/08/02/windows-command-line-introducing-the-windows-pseudo-console-conpty/] to `golang`. It was written by CircleCI.
->>>>>>> 6986621667a7d7126b08d1b7aa8437753dd8d9a9
 
 # Status
 
