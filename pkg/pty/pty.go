@@ -1,7 +1,6 @@
 package pty
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 	"unsafe"
@@ -9,20 +8,8 @@ import (
 	"github.com/marcomorain/go-win-py/pkg/system"
 	"github.com/pkg/errors"
 
-	"github.com/davecgh/go-spew/spew"
 	"golang.org/x/sys/windows"
 )
-
-func PrettyPrint(data interface{}) {
-	var p []byte
-	//    var err := error
-	p, err := json.MarshalIndent(data, "", "\t")
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	fmt.Printf("%s \n", p)
-}
 
 // EnableVirtualTerminalProcessing Enable Console VT Processing
 func EnableVirtualTerminalProcessing() error {
@@ -130,7 +117,7 @@ func createPseudoConsoleAndPipes() (pc, pipeIn, pipeOut windows.Handle, err erro
 		return 0, 0, 0, errors.Wrap(err, "failed to read screen size")
 	}
 
-	fmt.Printf("Screen: %v %v\n", size.X, size.Y)
+	//fmt.Printf("Screen: %v %v\n", size.X, size.Y)
 
 	console, err := system.CreatePseudoConsole(size, pipePtyIn, pipePtyOut)
 
@@ -180,8 +167,6 @@ func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupIn
 		return nil, errors.Wrap(err, "failed to allocate memory")
 	}
 
-	spew.Dump(startupInfo)
-
 	err = system.InitializeProcThreadAttributeList(startupInfo.AttributeList, &attributeListSize)
 
 	if err != nil {
@@ -189,8 +174,6 @@ func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupIn
 	}
 
 	var ProcThreadAttributePseudoconsole uint32 = 0x00020016
-
-	//PrettyPrint(startupInfo)
 
 	err = system.UpdateProcThreadAttribute(startupInfo.AttributeList, ProcThreadAttributePseudoconsole, uintptr(pc), unsafe.Sizeof(pc))
 
@@ -206,7 +189,7 @@ func RunProcessWithPty(command string) error {
 		return errors.Wrap(err, "failed to create pipes")
 	}
 
-	fmt.Printf("pc is %x\n", pc)
+	//fmt.Printf("pc is 0x%08X\n", pc)
 
 	// Clean-up the pipes
 	defer windows.CloseHandle(pipeOut)
@@ -246,7 +229,7 @@ func RunProcessWithPty(command string) error {
 	defer windows.CloseHandle(procInfo.Process)
 	defer windows.CloseHandle(procInfo.Thread)
 
-	fmt.Printf("Process: %v %v Thread: %v %v\n", procInfo.ProcessId, procInfo.Process, procInfo.ThreadId, procInfo.Thread)
+	//fmt.Printf("Process: %v %v Thread: %v %v\n", procInfo.ProcessId, procInfo.Process, procInfo.ThreadId, procInfo.Thread)
 
 	// Create & start thread to listen to the incoming pipe
 	go system.Copy(console, pipeIn)
@@ -265,8 +248,6 @@ func RunProcessWithPty(command string) error {
 
 	var exitCode uint32
 	windows.GetExitCodeProcess(procInfo.Process, &exitCode)
-
-	spew.Dump(startupInfo)
 
 	if exitCode != 0 {
 		return fmt.Errorf("exit process code: %x", exitCode)

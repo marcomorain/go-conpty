@@ -59,7 +59,7 @@ func win32Void(r1, r2 uintptr, err error) error {
 }
 
 func win32Handle(r1, r2 uintptr, err error) (uintptr, error) {
-	fmt.Printf("win32Handle: r1=%x r2=%x err=%v\n", r1, r2, err)
+	//fmt.Printf("win32Handle: r1=%x r2=%x err=%v\n", r1, r2, err)
 	if err != windows.Errno(0) {
 		return 0, err
 	}
@@ -103,9 +103,9 @@ func CreatePseudoConsole(size *windows.Coord, input, output windows.Handle) (pc 
 	err = win32Hresult(syscall.Syscall6(
 		createPseudoConsole,
 		5,
-		uintptr(unsafe.Pointer(&size)), // _In_ COORD size
-		uintptr(input),                 // _In_ HANDLE hInput
-		uintptr(output),                // _In_ HANDLE hOutput
+		uintptr(unsafe.Pointer(size)), // _In_ COORD size
+		uintptr(input),                // _In_ HANDLE hInput
+		uintptr(output),               // _In_ HANDLE hOutput
 		0,
 		uintptr(unsafe.Pointer(&pc)), // _Out_ HPCON* phPC
 		0))
@@ -137,9 +137,9 @@ type ProcThreadAttributeList struct {
 	Size     int32
 	Count    int32
 	Reserved int32
-	Unknown  *uint32
+	Unknown  uintptr
 	//Entries  *ProcThreadAttributeEntry
-	Entries *byte
+	Entries uintptr
 }
 
 // DeleteProcThreadAttributeList Deletes the specified list of attributes for process and thread creation.
@@ -153,13 +153,9 @@ func DeleteProcThreadAttributeList(attributeList uintptr) error {
 // https://docs.microsoft.com/en-us/windows/console/closepseudoconsole
 func ClosePseudoConsole(pc windows.Handle) error {
 	// Close ConPTY - this will terminate client process if running
-	fmt.Printf("Closing console %v\n", pc)
+	//fmt.Printf("Closing console %v\n", pc)
 	err := win32Void(syscall.Syscall(closePseudoConsole, 1, uintptr(pc), 0, 0)) // _In_ HPCON hPC
-	err = errors.Wrap(err, "Failed to close PseudoConsole")
-	if err != nil {
-		fmt.Printf("Error: %s\n", err)
-	}
-	return err
+	return errors.Wrap(err, "Failed to close PseudoConsole")
 }
 
 // Copy data from src int dst.
