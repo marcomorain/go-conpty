@@ -132,12 +132,12 @@ func createPseudoConsoleAndPipes() (pc, pipeIn, pipeOut windows.Handle, err erro
 
 	fmt.Printf("Screen: %v %v\n", size.X, size.Y)
 
-	pc, err = system.CreatePseudoConsole(size, pipePtyIn, pipePtyOut)
+	console, err := system.CreatePseudoConsole(size, pipePtyIn, pipePtyOut)
 
 	if err != nil {
 		return 0, 0, 0, errors.Wrap(err, "CreatePseudoConsole failed")
 	}
-	return pc, pipeIn, pipeOut, nil
+	return console, pipeIn, pipeOut, nil
 }
 
 // StartupInfoEx lint me
