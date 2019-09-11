@@ -7,7 +7,7 @@ import (
 	"github.com/marcomorain/go-win-py/pkg/pty"
 )
 
-func main() {
+func maina() {
 
 	// TODO
 	// defer windows.FreeLibrary(kernel32)
@@ -18,9 +18,9 @@ func main() {
 	}
 
 	fmt.Println("console is ok")
-	if err := pty.RunProcessWithPty(`ping localhost`); err != nil {
-		fmt.Printf("echo failed %v\n", err)
-		os.Exit(1)
-	}
+	// if err := pty.RunProcessWithPty(`ping localhost`); err != nil {
+	// 	fmt.Printf("echo failed %v\n", err)
+	// 	os.Exit(1)
+	// }
 
 }

@@ -2,6 +2,7 @@ package system
 
 import (
 	"fmt"
+	"io"
 	"syscall"
 	"unsafe"
 
@@ -99,18 +100,22 @@ func UpdateProcThreadAttribute(attributeList uintptr, flags uint32, value, size 
 
 // CreatePseudoConsole Creates a new pseudoconsole object for the calling process.
 // https://docs.microsoft.com/en-us/windows/console/createpseudoconsole
-func CreatePseudoConsole(size *windows.Coord, input, output windows.Handle) (pc windows.Handle, err error) {
-	err = win32Hresult(syscall.Syscall6(
+func CreatePseudoConsole(size *windows.Coord, input, output windows.Handle) (windows.Handle, error) {
+
+	phPC := new(windows.Handle)
+	*phPC = windows.InvalidHandle
+
+	err := win32Hresult(syscall.Syscall6(
 		createPseudoConsole,
 		5,
 		uintptr(unsafe.Pointer(size)), // _In_ COORD size
 		uintptr(input),                // _In_ HANDLE hInput
 		uintptr(output),               // _In_ HANDLE hOutput
 		0,
-		uintptr(unsafe.Pointer(&pc)), // _Out_ HPCON* phPC
+		uintptr(unsafe.Pointer(phPC)), // _Out_ HPCON* phPC
 		0))
 
-	return pc, errors.Wrap(err, "CreatePseudoConsole failed")
+	return *phPC, errors.Wrap(err, "CreatePseudoConsole failed")
 }
 
 // ResizePseudoConsole Resizes the internal buffers for a pseudoconsole to the given size.
@@ -160,27 +165,56 @@ func ClosePseudoConsole(pc windows.Handle) error {
 
 // Copy data from src int dst.
 // Returns the number of bytes written, and an error if one occured.
-func Copy(dst, src windows.Handle) (written int64, err error) {
+func Copy(dst windows.Handle, src io.Reader) (int64, error) {
 	buffer := make([]byte, 1024)
-	written = 0
+	var written int64 = 0
 
 	for {
 		// Read from the pipe
-		var bytesRead uint32
-		err = windows.ReadFile(src, buffer, &bytesRead, nil)
+		//var bytesRead uint32
+
+		bytesRead, err := src.Read(buffer)
+		//err = windows.ReadFile(src, buffer, &bytesRead, nil)
 
 		if err != nil || bytesRead == 0 {
-			return
+			return written, err
 		}
 
 		var bytesWritten uint32
 		err = windows.WriteFile(dst, buffer[:bytesRead], &bytesWritten, nil)
 
 		if err != nil {
-			return
+			return written, err
 		}
 
 		written += int64(bytesWritten)
+
+	}
+}
+
+func Copy2(dst io.Writer, src windows.Handle) (int, error) {
+	buffer := make([]byte, 1024)
+	var written = 0
+
+	for {
+		// Read from the pipe
+		var bytesRead uint32
+		err := windows.ReadFile(src, buffer, &bytesRead, nil)
+
+		if err != nil || bytesRead == 0 {
+			return written, err
+		}
+
+		bytesWritten, err := dst.Write(buffer[:bytesRead])
+
+		//var bytesWritten uint32
+		//err = windows.WriteFile(dst, buffer[:bytesRead], &bytesWritten, nil)
+
+		if err != nil {
+			return written, err
+		}
+
+		written += bytesWritten
 
 	}
 }

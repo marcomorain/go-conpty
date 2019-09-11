@@ -2,13 +2,17 @@ package pty
 
 import (
 	"fmt"
-	"time"
+	"io"
 	"unsafe"
 
 	"github.com/marcomorain/go-win-py/pkg/system"
 	"github.com/pkg/errors"
 
 	"golang.org/x/sys/windows"
+)
+
+var (
+	infinite uint32 = 4294967295
 )
 
 // EnableVirtualTerminalProcessing Enable Console VT Processing
@@ -96,7 +100,7 @@ func createPipes() (read, write windows.Handle, err error) {
 	return
 }
 
-func createPseudoConsoleAndPipes() (pc, pipeIn, pipeOut windows.Handle, err error) {
+func createPseudoConsoleAndPipes(size *windows.Coord) (pc, pipeIn, pipeOut windows.Handle, err error) {
 
 	pipePtyIn, pipeOut, err := createPipes()
 	if err != nil {
@@ -112,19 +116,16 @@ func createPseudoConsoleAndPipes() (pc, pipeIn, pipeOut windows.Handle, err erro
 
 	defer windows.CloseHandle(pipePtyOut)
 
-	size, err := getScreenSize() // TODO: pass this is
-	if err != nil {
-		return 0, 0, 0, errors.Wrap(err, "failed to read screen size")
-	}
+	//size, err := getScreenSize() // TODO: pass this is
+	//if err != nil {
+	//return 0, 0, 0, errors.Wrap(err, "failed to read screen size")
+	//}
 
-	//fmt.Printf("Screen: %v %v\n", size.X, size.Y)
+	fmt.Printf("Screen: %v %v\n", size.X, size.Y)
 
 	console, err := system.CreatePseudoConsole(size, pipePtyIn, pipePtyOut)
 
-	if err != nil {
-		return 0, 0, 0, errors.Wrap(err, "CreatePseudoConsole failed")
-	}
-	return console, pipeIn, pipeOut, nil
+	return console, pipeIn, pipeOut, err
 }
 
 // StartupInfoEx lint me
@@ -136,7 +137,7 @@ type StartupInfoEx struct {
 // InitializeStartupInfoAttachedToPseudoConsole Initializes the specified startup info
 // struct with the required properties and updates its thread attribute list with the
 // specified ConPTY handle
-func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupInfoEx, error) {
+func initializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupInfoEx, error) {
 
 	if pc == windows.InvalidHandle {
 		return nil, errors.New("bad pc")
@@ -181,12 +182,12 @@ func InitializeStartupInfoAttachedToPseudoConsole(pc windows.Handle) (*StartupIn
 }
 
 // Echo test entry point
-func RunProcessWithPty(command string) error {
+func RunProcessWithPty(command string, size *windows.Coord, input io.Reader, output io.Writer) error {
 
-	pc, pipeIn, pipeOut, err := createPseudoConsoleAndPipes()
+	pc, pipeIn, pipeOut, err := createPseudoConsoleAndPipes(size)
 
 	if err != nil {
-		return errors.Wrap(err, "failed to create pipes")
+		return err
 	}
 
 	//fmt.Printf("pc is 0x%08X\n", pc)
@@ -195,15 +196,15 @@ func RunProcessWithPty(command string) error {
 	defer windows.CloseHandle(pipeOut)
 	defer windows.CloseHandle(pipeIn)
 
-	console, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
+	//console, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
 
 	if err != nil {
 		return err
 	}
 
-	stdin, err := windows.GetStdHandle(windows.STD_INPUT_HANDLE)
+	//stdin, err := windows.GetStdHandle(windows.STD_INPUT_HANDLE)
 
-	startupInfo, err := InitializeStartupInfoAttachedToPseudoConsole(pc)
+	startupInfo, err := initializeStartupInfoAttachedToPseudoConsole(pc)
 
 	if err != nil {
 		return errors.Wrap(err, "failed to InitializeStartupInfoAttachedToPseudoConsole")
@@ -232,11 +233,11 @@ func RunProcessWithPty(command string) error {
 	//fmt.Printf("Process: %v %v Thread: %v %v\n", procInfo.ProcessId, procInfo.Process, procInfo.ThreadId, procInfo.Thread)
 
 	// Create & start thread to listen to the incoming pipe
-	go system.Copy(console, pipeIn)
-	go system.Copy(pipeOut, stdin)
+	go system.Copy2(output, pipeIn)
+	go system.Copy(pipeOut, input)
 
 	// Wait up to 10s for ping process to complete
-	event, err := windows.WaitForSingleObject(procInfo.Process, 10*1000)
+	event, err := windows.WaitForSingleObject(procInfo.Process, infinite)
 	if err != nil {
 		return errors.Wrap(err, "WaitForSingleObjectd")
 	}
@@ -250,13 +251,8 @@ func RunProcessWithPty(command string) error {
 	windows.GetExitCodeProcess(procInfo.Process, &exitCode)
 
 	if exitCode != 0 {
-		return fmt.Errorf("exit process code: %x", exitCode)
+		return fmt.Errorf("Process exited with error code %x", exitCode)
 	}
-
-	// Allow listening thread to catch-up with final output!
-	time.Sleep(500 * time.Millisecond)
-
-	//fmt.Printf("slept ok buffer is %v\n", buffer)
 
 	// --- CLOSEDOWN ---
 	// Now safe to clean-up client app's process-info & thread
